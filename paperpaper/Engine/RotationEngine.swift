@@ -42,6 +42,10 @@ final class RotationEngine {
         nextFireAt = nil
     }
 
+    func rotateNow() async {
+        await rotate()
+    }
+
     private func handleSpaceChange() async {
         let rule = Store.shared.rule()
         guard rule.spaceMode == .unified else { return }
@@ -51,12 +55,7 @@ final class RotationEngine {
         _ = try? await WallpaperApplier.shared.reapply(photo: recent)
     }
 
-    func rotateNow() async {
-        await rotate()
-    }
-
     private func loop() async {
-        // First rotation shortly after start so the user sees an effect.
         try? await Task.sleep(for: .seconds(1))
         if Task.isCancelled { return }
         await rotate()
@@ -77,22 +76,48 @@ final class RotationEngine {
 
     private func rotate() async {
         do {
+            let filters = Store.shared.filters()
+            let topic = filters.topics.randomElement() ?? "architecture"
             let prefetchCount = UserDefaults.standard.object(forKey: "cache.prefetchCount") as? Int ?? 3
-            let photos = try await UnsplashService.shared.randomArchitecture(count: 1 + prefetchCount)
-            guard let first = photos.first else { return }
+            let photos = try await UnsplashService.shared.random(query: topic, count: 1 + prefetchCount)
+            let eligible = photos.filter { candidate in
+                acceptCandidate(candidate, filters: filters)
+            }
+            guard let first = eligible.first ?? photos.first else { return }
+
             let applied = try await WallpaperApplier.shared.apply(unsplash: first)
             lastError = nil
 
-            Task { [weak self] in
-                _ = self
+            Task {
                 await WallpaperApplier.shared.enrichIfNeeded(applied)
             }
 
-            for photo in photos.dropFirst() {
-                await WallpaperApplier.shared.preCache(photo)
+            let remaining = eligible.dropFirst().prefix(prefetchCount)
+            for candidate in remaining {
+                await WallpaperApplier.shared.preCache(candidate)
             }
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    private func acceptCandidate(_ photo: UnsplashPhoto, filters: FilterPrefs) -> Bool {
+        let aspect = Double(photo.width) / Double(max(photo.height, 1))
+        if aspect < filters.minAspect || aspect > filters.maxAspect { return false }
+
+        let tagTitles = (photo.tags ?? []).map(\.title.localizedLowercase)
+        for excluded in filters.excludedTags where !excluded.isEmpty {
+            if tagTitles.contains(excluded.localizedLowercase) { return false }
+        }
+
+        if let needle = filters.countryContains, !needle.isEmpty {
+            let country = photo.location?.country?.localizedLowercase ?? ""
+            if !country.contains(needle.localizedLowercase) { return false }
+        }
+        if let needle = filters.cameraContains, !needle.isEmpty {
+            let camera = [photo.exif?.make, photo.exif?.model].compactMap { $0 }.joined(separator: " ").localizedLowercase
+            if !camera.contains(needle.localizedLowercase) { return false }
+        }
+        return true
     }
 }

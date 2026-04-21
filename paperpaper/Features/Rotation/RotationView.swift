@@ -3,9 +3,13 @@ import SwiftData
 
 struct RotationView: View {
     @Query private var rules: [RotationRule]
+    @Query private var filterRows: [FilterPrefs]
     @State private var engine = RotationEngine.shared
+    @State private var newTopic: String = ""
+    @State private var newExclusion: String = ""
 
     private var rule: RotationRule { rules.first ?? Store.shared.rule() }
+    private var filters: FilterPrefs { filterRows.first ?? Store.shared.filters() }
 
     var body: some View {
         Form {
@@ -102,6 +106,78 @@ struct RotationView: View {
                 }
             }
 
+            Section("Topics") {
+                HStack {
+                    TextField("Add a topic (e.g. brutalism)", text: $newTopic)
+                        .onSubmit { addTopic() }
+                    Button("Add") { addTopic() }
+                        .disabled(newTopic.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if filters.topics.isEmpty {
+                    Text("No topics — rotation will fall back to 'architecture'.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(filters.topics, id: \.self) { topic in
+                        HStack {
+                            Text(topic)
+                            Spacer()
+                            Button(role: .destructive) { removeTopic(topic) } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
+
+            Section("Filters") {
+                HStack {
+                    Text("Aspect ratio")
+                    Slider(value: Binding(
+                        get: { filters.minAspect },
+                        set: { filters.minAspect = min($0, filters.maxAspect); try? Store.shared.context.save() }
+                    ), in: 0.5...3.0, step: 0.1)
+                    Text(String(format: "%.1f", filters.minAspect))
+                        .monospacedDigit()
+                        .frame(width: 40, alignment: .trailing)
+                    Text("–")
+                    Slider(value: Binding(
+                        get: { filters.maxAspect },
+                        set: { filters.maxAspect = max($0, filters.minAspect); try? Store.shared.context.save() }
+                    ), in: 0.5...3.0, step: 0.1)
+                    Text(String(format: "%.1f", filters.maxAspect))
+                        .monospacedDigit()
+                        .frame(width: 40, alignment: .trailing)
+                }
+                TextField("Country contains", text: Binding(
+                    get: { filters.countryContains ?? "" },
+                    set: { filters.countryContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
+                ))
+                TextField("Camera contains", text: Binding(
+                    get: { filters.cameraContains ?? "" },
+                    set: { filters.cameraContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
+                ))
+                HStack {
+                    TextField("Add an excluded tag", text: $newExclusion)
+                        .onSubmit { addExclusion() }
+                    Button("Add") { addExclusion() }
+                        .disabled(newExclusion.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if !filters.excludedTags.isEmpty {
+                    ForEach(filters.excludedTags, id: \.self) { tag in
+                        HStack {
+                            Text(tag)
+                            Spacer()
+                            Button(role: .destructive) { removeExclusion(tag) } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
+
             Section("Status") {
                 LabeledContent("Running", value: engine.isRunning ? "Yes" : "No")
                 if let next = engine.nextFireAt {
@@ -117,6 +193,36 @@ struct RotationView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func addTopic() {
+        let t = newTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        if !filters.topics.contains(t) {
+            filters.topics.append(t)
+            try? Store.shared.context.save()
+        }
+        newTopic = ""
+    }
+
+    private func removeTopic(_ topic: String) {
+        filters.topics.removeAll { $0 == topic }
+        try? Store.shared.context.save()
+    }
+
+    private func addExclusion() {
+        let t = newExclusion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        if !filters.excludedTags.contains(t) {
+            filters.excludedTags.append(t)
+            try? Store.shared.context.save()
+        }
+        newExclusion = ""
+    }
+
+    private func removeExclusion(_ tag: String) {
+        filters.excludedTags.removeAll { $0 == tag }
+        try? Store.shared.context.save()
     }
 
     private func formatInterval(_ seconds: Int) -> String {

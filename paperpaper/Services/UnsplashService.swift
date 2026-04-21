@@ -109,9 +109,13 @@ final class UnsplashService {
     }
 
     func randomArchitecture(count: Int = 1) async throws -> [UnsplashPhoto] {
+        try await random(query: "architecture", count: count)
+    }
+
+    func random(query: String, count: Int = 1) async throws -> [UnsplashPhoto] {
         var comps = URLComponents(url: base.appending(path: "/photos/random"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [
-            URLQueryItem(name: "query", value: "architecture"),
+            URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "orientation", value: "landscape"),
             URLQueryItem(name: "count", value: String(count)),
             URLQueryItem(name: "content_filter", value: "high"),
