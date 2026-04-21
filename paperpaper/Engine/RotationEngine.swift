@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftData
 
 @MainActor
 @Observable
@@ -21,6 +22,12 @@ final class RotationEngine {
         stop()
         isRunning = true
         lastError = nil
+        SpaceObserver.shared.onChange = { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.handleSpaceChange()
+            }
+        }
+        SpaceObserver.shared.start()
         loopTask = Task { [weak self] in
             await self?.loop()
         }
@@ -29,8 +36,19 @@ final class RotationEngine {
     func stop() {
         loopTask?.cancel()
         loopTask = nil
+        SpaceObserver.shared.onChange = nil
+        SpaceObserver.shared.stop()
         isRunning = false
         nextFireAt = nil
+    }
+
+    private func handleSpaceChange() async {
+        let rule = Store.shared.rule()
+        guard rule.spaceMode == .unified else { return }
+
+        let descriptor = FetchDescriptor<Photo>(sortBy: [SortDescriptor(\.lastSeenAt, order: .reverse)])
+        guard let recent = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }) else { return }
+        _ = try? await WallpaperApplier.shared.reapply(photo: recent)
     }
 
     func rotateNow() async {
