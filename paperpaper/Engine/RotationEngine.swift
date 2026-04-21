@@ -62,8 +62,13 @@ final class RotationEngine {
             let prefetchCount = UserDefaults.standard.object(forKey: "cache.prefetchCount") as? Int ?? 3
             let photos = try await UnsplashService.shared.randomArchitecture(count: 1 + prefetchCount)
             guard let first = photos.first else { return }
-            _ = try await WallpaperApplier.shared.apply(unsplash: first)
+            let applied = try await WallpaperApplier.shared.apply(unsplash: first)
             lastError = nil
+
+            Task { [weak self] in
+                _ = self
+                await WallpaperApplier.shared.enrichIfNeeded(applied)
+            }
 
             for photo in photos.dropFirst() {
                 await WallpaperApplier.shared.preCache(photo)

@@ -2,15 +2,18 @@ import SwiftUI
 
 struct ConnectionsView: View {
     @State private var unsplashKey: String = ""
-    @State private var ollamaURL: String = "http://localhost:11434"
-    @State private var ollamaModel: String = "llama3.2"
     @State private var ollamaAuth: String = ""
-    @State private var ollamaWebSearch: Bool = false
-    @State private var ollamaTemperature: Double = 0.3
-    @State private var ollamaTimeoutSeconds: Double = 30
+
+    @AppStorage("ollama.url") private var ollamaURL: String = "http://localhost:11434"
+    @AppStorage("ollama.model") private var ollamaModel: String = "llama3.2"
+    @AppStorage("ollama.webSearch") private var ollamaWebSearch: Bool = false
+    @AppStorage("ollama.temperature") private var ollamaTemperature: Double = 0.3
+    @AppStorage("ollama.timeoutSeconds") private var ollamaTimeoutSeconds: Double = 30
 
     @State private var unsplashStatus: TestStatus = .idle
     @State private var unsplashMessage: String?
+    @State private var ollamaStatus: TestStatus = .idle
+    @State private var ollamaMessage: String?
 
     var body: some View {
         Form {
@@ -18,16 +21,14 @@ struct ConnectionsView: View {
                 SecureField("Access Key", text: $unsplashKey)
                 HStack {
                     Button("Save") { saveUnsplash() }
-                    Button("Test") {
-                        Task { await testUnsplash() }
-                    }
-                    .disabled(unsplashKey.isEmpty)
+                    Button("Test") { Task { await testUnsplash() } }
+                        .disabled(unsplashKey.isEmpty)
                     StatusChip(status: unsplashStatus)
                     if let msg = unsplashMessage {
                         Text(msg)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
                 }
                 Text("Paste your Unsplash Access Key (not the Secret). Free developer keys work.")
@@ -54,7 +55,17 @@ struct ConnectionsView: View {
                         .monospacedDigit()
                         .frame(width: 60, alignment: .trailing)
                 }
-                Button("Save") { saveOllamaAuth() }
+                HStack {
+                    Button("Save") { saveOllamaAuth() }
+                    Button("Test") { Task { await testOllama() } }
+                    StatusChip(status: ollamaStatus)
+                    if let msg = ollamaMessage {
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
@@ -67,19 +78,13 @@ struct ConnectionsView: View {
     }
 
     private func saveUnsplash() {
-        if unsplashKey.isEmpty {
-            KeychainService.shared.delete(.unsplashAccessKey)
-        } else {
-            KeychainService.shared.set(unsplashKey, for: .unsplashAccessKey)
-        }
+        if unsplashKey.isEmpty { KeychainService.shared.delete(.unsplashAccessKey) }
+        else { KeychainService.shared.set(unsplashKey, for: .unsplashAccessKey) }
     }
 
     private func saveOllamaAuth() {
-        if ollamaAuth.isEmpty {
-            KeychainService.shared.delete(.ollamaAuthHeader)
-        } else {
-            KeychainService.shared.set(ollamaAuth, for: .ollamaAuthHeader)
-        }
+        if ollamaAuth.isEmpty { KeychainService.shared.delete(.ollamaAuthHeader) }
+        else { KeychainService.shared.set(ollamaAuth, for: .ollamaAuthHeader) }
     }
 
     private func testUnsplash() async {
@@ -94,6 +99,15 @@ struct ConnectionsView: View {
             unsplashStatus = .failed
             unsplashMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    private func testOllama() async {
+        saveOllamaAuth()
+        ollamaStatus = .testing
+        ollamaMessage = nil
+        let ok = await OllamaService.shared.ping()
+        ollamaStatus = ok ? .ok : .failed
+        ollamaMessage = ok ? "Reachable at \(ollamaURL)" : "Could not reach Ollama at \(ollamaURL). Is it running?"
     }
 }
 

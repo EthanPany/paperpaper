@@ -52,6 +52,55 @@ final class WallpaperApplier {
         _ = try? await ensureDownloaded(id: unsplash.id, url: unsplash.urls.full)
     }
 
+    func enrichIfNeeded(_ photo: Photo) async {
+        if let existing = photo.enrichment, existing.enrichedAt != nil { return }
+
+        let candidate = BuildingDetector.detect(
+            description: photo.photoDescription,
+            altDescription: photo.altDescription,
+            tags: photo.tags,
+            locationName: photo.locationName ?? photo.areaText
+        )
+
+        let enrichment = photo.enrichment ?? {
+            let e = Enrichment()
+            e.photo = photo
+            Store.shared.context.insert(e)
+            return e
+        }()
+
+        guard let candidate else {
+            enrichment.confidence = .areaOnly
+            enrichment.enrichedAt = .now
+            try? Store.shared.context.save()
+            return
+        }
+
+        let gps: (Double, Double)?
+        if let lat = photo.exif?.latitude, let lon = photo.exif?.longitude {
+            gps = (lat, lon)
+        } else {
+            gps = nil
+        }
+
+        do {
+            let result = try await OllamaService.shared.enrich(candidate: candidate, tags: photo.tags, gps: gps)
+            enrichment.buildingName = result.name?.isEmpty == false ? result.name : candidate.name
+            enrichment.architect = result.architect
+            enrichment.year = result.year
+            enrichment.style = result.style
+            enrichment.oneSentence = result.one_sentence
+            enrichment.confidence = .building
+            enrichment.enrichedAt = .now
+            enrichment.modelUsed = UserDefaults.standard.string(forKey: "ollama.model")
+        } catch {
+            enrichment.buildingName = candidate.name
+            enrichment.confidence = .areaOnly
+            enrichment.enrichedAt = .now
+        }
+        try? Store.shared.context.save()
+    }
+
     private func ensureDownloaded(id: String, url: URL) async throws -> URL {
         let local = ImageCache.shared.fileURL(for: id)
         if FileManager.default.fileExists(atPath: local.path) {
