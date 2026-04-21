@@ -126,6 +126,8 @@ private struct DiscoverTile: View {
 private struct DiscoverDetail: View {
     let photo: UnsplashPhoto
     @Environment(\.dismiss) private var dismiss
+    @State private var isApplying: Bool = false
+    @State private var applyError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -133,9 +135,20 @@ private struct DiscoverDetail: View {
                 Text(photo.description ?? photo.alt_description ?? "Photo")
                     .font(.headline)
                 Spacer()
+                Button(isApplying ? "Setting…" : "Set as wallpaper") {
+                    Task { await apply() }
+                }
+                .disabled(isApplying)
+                .keyboardShortcut(.defaultAction)
                 Button("Close") { dismiss() }
             }
             .padding()
+
+            if let applyError {
+                Label(applyError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+            }
 
             AsyncImage(url: photo.urls.regular) { phase in
                 switch phase {
@@ -189,6 +202,18 @@ private struct DiscoverDetail: View {
             }
             .formStyle(.grouped)
         }
+    }
+
+    private func apply() async {
+        isApplying = true
+        applyError = nil
+        do {
+            _ = try await WallpaperApplier.shared.apply(unsplash: photo)
+            dismiss()
+        } catch {
+            applyError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        isApplying = false
     }
 }
 
