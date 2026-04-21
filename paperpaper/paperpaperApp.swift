@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+#if os(macOS)
+import AppKit
+#endif
 
 @main
 struct paperpaperApp: App {
@@ -8,6 +11,11 @@ struct paperpaperApp: App {
     init() {
         #if DEBUG
         Store.shared.seedFakeData()
+        #endif
+        #if os(macOS)
+        if UserDefaults.standard.bool(forKey: "app.hideDockIcon") {
+            NSApp.setActivationPolicy(.accessory)
+        }
         #endif
         RotationEngine.shared.startIfEnabled()
     }
