@@ -9,6 +9,7 @@ struct paperpaperApp: App {
         #if DEBUG
         Store.shared.seedFakeData()
         #endif
+        RotationEngine.shared.startIfEnabled()
     }
 
     var body: some Scene {
