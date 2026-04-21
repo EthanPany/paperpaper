@@ -50,10 +50,6 @@ struct AdvancedView: View {
     }
 }
 
-enum LogLevel: Hashable {
-    case error, warn, info, debug
-}
-
 #Preview {
     AdvancedView()
         .frame(width: 900, height: 600)

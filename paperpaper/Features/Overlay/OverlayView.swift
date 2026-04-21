@@ -52,10 +52,6 @@ struct OverlayView: View {
     }
 }
 
-enum OverlayCorner: Hashable {
-    case topLeft, topRight, bottomLeft, bottomRight
-}
-
 #Preview {
     OverlayView()
         .frame(width: 900, height: 600)

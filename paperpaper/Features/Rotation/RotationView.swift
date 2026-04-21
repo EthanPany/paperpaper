@@ -38,10 +38,6 @@ struct RotationView: View {
     }
 }
 
-enum SpaceMode: Hashable {
-    case unified, perSpace, activeOnly
-}
-
 #Preview {
     RotationView()
         .frame(width: 900, height: 600)

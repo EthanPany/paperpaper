@@ -1,8 +1,15 @@
 import SwiftUI
+import SwiftData
 
 @main
 struct paperpaperApp: App {
     @Environment(\.openWindow) private var openWindow
+
+    init() {
+        #if DEBUG
+        Store.shared.seedFakeData()
+        #endif
+    }
 
     var body: some Scene {
         #if os(macOS)
@@ -17,11 +24,13 @@ struct paperpaperApp: App {
 
         Window("paperpaper", id: WindowID.main) {
             MainWindow()
+                .modelContainer(Store.shared.container)
         }
         .windowResizability(.contentSize)
         #else
         WindowGroup {
             MainWindow()
+                .modelContainer(Store.shared.container)
         }
         #endif
     }
