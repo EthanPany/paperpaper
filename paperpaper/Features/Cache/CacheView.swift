@@ -1,9 +1,12 @@
 import SwiftUI
 
 struct CacheView: View {
-    @State private var maxSizeMB: Double = 500
-    @State private var prefetchCount: Double = 3
-    @State private var keepOnlyReferences: Bool = true
+    @AppStorage("cache.maxSizeMB") private var maxSizeMB: Double = 500
+    @AppStorage("cache.prefetchCount") private var prefetchCount: Int = 3
+    @AppStorage("cache.keepOnlyReferences") private var keepOnlyReferences: Bool = true
+
+    @State private var currentSizeMB: Double = 0
+    @State private var count: Int = 0
 
     var body: some View {
         Form {
@@ -17,26 +20,46 @@ struct CacheView: View {
                 }
                 HStack {
                     Text("Pre-fetch next")
-                    Slider(value: $prefetchCount, in: 0...10, step: 1)
-                    Text("\(Int(prefetchCount))")
+                    Slider(
+                        value: Binding(
+                            get: { Double(prefetchCount) },
+                            set: { prefetchCount = Int($0) }
+                        ),
+                        in: 0...10,
+                        step: 1
+                    )
+                    Text("\(prefetchCount)")
                         .monospacedDigit()
                         .frame(width: 40, alignment: .trailing)
                 }
                 Toggle("Keep only references after rotation", isOn: $keepOnlyReferences)
+                    .help("When on, the cache is pruned aggressively, keeping only the current and pre-fetched images.")
             }
 
             Section("Stats") {
-                LabeledContent("Current size", value: "0 MB")
-                LabeledContent("Images cached", value: "0")
-                LabeledContent("Hit rate", value: "—")
+                LabeledContent("Current size", value: String(format: "%.1f MB", currentSizeMB))
+                LabeledContent("Images cached", value: "\(count)")
+                LabeledContent("Cache folder", value: ImageCache.shared.dir.path)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             Section {
-                Button("Clear image cache", role: .destructive) {}
-                Button("Clear enrichment cache", role: .destructive) {}
+                Button("Refresh stats") { refresh() }
+                Button("Clear image cache", role: .destructive) {
+                    ImageCache.shared.clear()
+                    refresh()
+                }
             }
         }
         .formStyle(.grouped)
+        .task { refresh() }
+    }
+
+    private func refresh() {
+        let bytes = ImageCache.shared.currentSizeBytes()
+        currentSizeMB = Double(bytes) / (1024 * 1024)
+        count = ImageCache.shared.currentCount()
     }
 }
 

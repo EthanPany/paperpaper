@@ -59,10 +59,15 @@ final class RotationEngine {
 
     private func rotate() async {
         do {
-            let photos = try await UnsplashService.shared.randomArchitecture(count: 1)
-            guard let photo = photos.first else { return }
-            _ = try await WallpaperApplier.shared.apply(unsplash: photo)
+            let prefetchCount = UserDefaults.standard.object(forKey: "cache.prefetchCount") as? Int ?? 3
+            let photos = try await UnsplashService.shared.randomArchitecture(count: 1 + prefetchCount)
+            guard let first = photos.first else { return }
+            _ = try await WallpaperApplier.shared.apply(unsplash: first)
             lastError = nil
+
+            for photo in photos.dropFirst() {
+                await WallpaperApplier.shared.preCache(photo)
+            }
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
