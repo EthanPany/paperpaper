@@ -20,6 +20,9 @@ struct paperpaperApp: App {
             NSApp.setActivationPolicy(.accessory)
         }
         #endif
+        // Bring the widget up to date with whatever wallpaper was last applied,
+        // so users see the current photo immediately after launch.
+        WallpaperApplier.shared.syncWidgetFromCurrent()
         RotationEngine.shared.startIfEnabled()
     }
 

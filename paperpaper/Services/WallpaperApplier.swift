@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import os
 #if canImport(WidgetKit)
 import WidgetKit
 #endif
@@ -7,6 +8,8 @@ import WidgetKit
 @MainActor
 final class WallpaperApplier {
     static let shared = WallpaperApplier()
+
+    private let log = Logger(subsystem: "ep.paperpaper", category: "widget-sync")
 
     func localFileURL(for unsplashID: String) -> URL {
         ImageCache.shared.fileURL(for: unsplashID)
@@ -26,14 +29,17 @@ final class WallpaperApplier {
             try? Store.shared.context.save()
         }
 
-        let appliedFile = try composeOverlayIfEnabled(for: photo, sourceFile: rawFile)
+        let appliedFile = (try? composeOverlayIfEnabled(for: photo, sourceFile: rawFile)) ?? rawFile
+
+        Store.shared.recordShown(photo)
+        // Sync the widget first, so even if setting the wallpaper itself fails
+        // (permission, disk, etc.) the widget still shows the just-picked photo.
+        writeWidgetPayload(for: photo, file: appliedFile)
 
         #if os(macOS)
         try WallpaperService.shared.setOnAllScreens(imageURL: appliedFile)
         #endif
 
-        Store.shared.recordShown(photo)
-        writeWidgetPayload(for: photo, file: appliedFile)
         enforceCacheCap()
         return photo
     }
@@ -44,20 +50,39 @@ final class WallpaperApplier {
         let rawFile = try await ensureDownloaded(id: photo.unsplashID, url: fullURL)
         ImageCache.shared.touch(rawFile)
 
-        let appliedFile = try composeOverlayIfEnabled(for: photo, sourceFile: rawFile)
+        let appliedFile = (try? composeOverlayIfEnabled(for: photo, sourceFile: rawFile)) ?? rawFile
+
+        Store.shared.recordShown(photo)
+        writeWidgetPayload(for: photo, file: appliedFile)
 
         #if os(macOS)
         try WallpaperService.shared.setOnAllScreens(imageURL: appliedFile)
         #endif
 
-        Store.shared.recordShown(photo)
-        writeWidgetPayload(for: photo, file: appliedFile)
         enforceCacheCap()
         return true
     }
 
     func preCache(_ unsplash: UnsplashPhoto) async {
         _ = try? await ensureDownloaded(id: unsplash.id, url: unsplash.urls.full)
+    }
+
+    /// Writes the widget payload using the most recent applied photo, if any.
+    /// Call at launch and from a manual "Refresh widget" control to repair sync.
+    func syncWidgetFromCurrent() {
+        let descriptor = FetchDescriptor<Photo>(sortBy: [SortDescriptor(\.lastSeenAt, order: .reverse)])
+        guard let latest = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }) else {
+            log.info("syncWidgetFromCurrent: no applied photo yet")
+            return
+        }
+        let style = Store.shared.overlay()
+        let raw = ImageCache.shared.fileURL(for: latest.unsplashID)
+        let overlay = ImageCache.shared.dir.appending(path: "\(latest.unsplashID).overlay.jpg")
+        let preferred: URL = {
+            if style.enabled, FileManager.default.fileExists(atPath: overlay.path) { return overlay }
+            return raw
+        }()
+        writeWidgetPayload(for: latest, file: preferred)
     }
 
     func enrichIfNeeded(_ photo: Photo) async {
@@ -156,9 +181,18 @@ final class WallpaperApplier {
             takenAtSeconds: photo.exif?.takenAt?.timeIntervalSince1970,
             updatedAtSeconds: Date.now.timeIntervalSince1970
         )
-        try? payload.write()
+        do {
+            try payload.write()
+            log.info("wrote widget payload for \(photo.unsplashID, privacy: .public) image=\(imageFileName, privacy: .public)")
+        } catch {
+            log.error("payload.write failed: \(error.localizedDescription, privacy: .public)")
+        }
+
         #if canImport(WidgetKit)
+        // Reload everything in the widget bundle. WidgetKit throttles internally
+        // but this is still the correct way to tell the widget host "something new".
         WidgetCenter.shared.reloadAllTimelines()
+        WidgetCenter.shared.invalidateConfigurationRecommendations()
         #endif
     }
 
@@ -167,11 +201,16 @@ final class WallpaperApplier {
         let dir = WidgetPayload.widgetDir()
         let name = "current.jpg"
         let destination = dir.appending(path: name)
-        try? fm.removeItem(at: destination)
+        if !fm.fileExists(atPath: sourceFile.path) {
+            log.error("copy source missing: \(sourceFile.path, privacy: .public)")
+            return ""
+        }
+        _ = try? fm.removeItem(at: destination)
         do {
             try fm.copyItem(at: sourceFile, to: destination)
             return name
         } catch {
+            log.error("copy to app group failed: \(error.localizedDescription, privacy: .public) dest=\(destination.path, privacy: .public)")
             return ""
         }
     }
@@ -180,8 +219,15 @@ final class WallpaperApplier {
         let descriptor = FetchDescriptor<Photo>(sortBy: [SortDescriptor(\.lastSeenAt, order: .reverse)])
         guard let latest = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }),
               latest.unsplashID == photo.unsplashID else { return }
-        let file = ImageCache.shared.fileURL(for: photo.unsplashID)
-        writeWidgetPayload(for: photo, file: file)
+
+        let style = Store.shared.overlay()
+        let raw = ImageCache.shared.fileURL(for: photo.unsplashID)
+        let overlay = ImageCache.shared.dir.appending(path: "\(photo.unsplashID).overlay.jpg")
+        let preferred: URL = {
+            if style.enabled, FileManager.default.fileExists(atPath: overlay.path) { return overlay }
+            return raw
+        }()
+        writeWidgetPayload(for: photo, file: preferred)
     }
 
     private func enforceCacheCap() {

@@ -55,6 +55,18 @@ struct CachePane: View {
                     .buttonStyle(.glass)
             }
 
+            Section("Widget") {
+                Button {
+                    WallpaperApplier.shared.syncWidgetFromCurrent()
+                } label: {
+                    Label("Refresh widget now", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.glass)
+                Text("Forces the widget's payload file and image to be rewritten from the current wallpaper, then reloads all timelines. Useful if the widget shows stale content.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Button("Clear image cache", role: .destructive) {
                     ImageCache.shared.clear()
