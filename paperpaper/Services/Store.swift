@@ -18,11 +18,23 @@ final class Store {
             OverlayStyle.self,
             SyncPrefs.self,
         ])
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+
+        let syncEnabled = UserDefaults.standard.bool(forKey: "sync.enabled")
+        let config: ModelConfiguration
+        if syncEnabled {
+            config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .automatic)
+        } else {
+            config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
+        }
         do {
             container = try ModelContainer(for: schema, configurations: [config])
         } catch {
-            fatalError("Failed to create ModelContainer: \(error)")
+            let fallback = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
+            do {
+                container = try ModelContainer(for: schema, configurations: [fallback])
+            } catch {
+                fatalError("Failed to create ModelContainer: \(error)")
+            }
         }
         ensureSingletonsExist()
     }

@@ -1,5 +1,8 @@
 import Foundation
 import SwiftData
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 @MainActor
 final class WallpaperApplier {
@@ -152,6 +155,9 @@ final class WallpaperApplier {
             updatedAtSeconds: Date.now.timeIntervalSince1970
         )
         try? payload.write()
+        #if canImport(WidgetKit)
+        WidgetCenter.shared.reloadAllTimelines()
+        #endif
     }
 
     private func rewriteWidgetPayloadIfCurrent(_ photo: Photo) {

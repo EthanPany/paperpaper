@@ -19,8 +19,15 @@ struct WidgetPayload: Codable, Sendable {
     var takenAtSeconds: Double?
     var updatedAtSeconds: Double
 
+    static let appGroup = "group.ep.paperpaper"
+
     static func fileURL() -> URL {
         let fm = FileManager.default
+        if let group = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+            let dir = group.appending(path: "widget")
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir.appending(path: "payload.json")
+        }
         let support = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)) ?? fm.temporaryDirectory
         let dir = support.appending(path: "paperpaper/widget")
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
