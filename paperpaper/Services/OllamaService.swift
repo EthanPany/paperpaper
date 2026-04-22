@@ -14,6 +14,7 @@ enum OllamaError: Error, LocalizedError {
     case decoding(Error)
     case transport(Error)
     case emptyResponse
+    case missingAPIKey
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,7 @@ enum OllamaError: Error, LocalizedError {
         case .decoding(let error): return "Could not parse Ollama response: \(error.localizedDescription)"
         case .transport(let error): return "Could not reach Ollama: \(error.localizedDescription)"
         case .emptyResponse: return "Ollama returned an empty response."
+        case .missingAPIKey: return "Ollama web search requires an API key (ollama.com account)."
         }
     }
 }
@@ -34,6 +36,10 @@ final class OllamaService {
         let url = try baseURL().appending(path: "/api/generate")
         let prompt = buildPrompt(candidate: candidate, tags: tags, gps: gps)
 
+        if webSearch() && (apiKey() ?? "").isEmpty {
+            throw OllamaError.missingAPIKey
+        }
+
         var body: [String: Any] = [
             "model": model(),
             "prompt": prompt,
@@ -44,14 +50,14 @@ final class OllamaService {
             ],
         ]
         if webSearch() {
-            body["options.tools"] = ["web_search"]
+            body["tools"] = [["type": "web_search"]]
         }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let auth = KeychainService.shared.get(.ollamaAuthHeader), !auth.isEmpty {
+        if let auth = authorizationHeader() {
             req.setValue(auth, forHTTPHeaderField: "Authorization")
         }
 
@@ -96,13 +102,39 @@ final class OllamaService {
     func ping() async -> Bool {
         guard let base = try? baseURL() else { return false }
         var req = URLRequest(url: base.appending(path: "/api/tags"))
-        req.httpMethod = "GET"
+        if let auth = authorizationHeader() {
+            req.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
         do {
             let (_, response) = try await URLSession.shared.data(for: req)
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             return false
         }
+    }
+
+    /// List local models via /api/tags.
+    func listModels() async throws -> [String] {
+        let url = try baseURL().appending(path: "/api/tags")
+        var req = URLRequest(url: url)
+        if let auth = authorizationHeader() {
+            req.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw OllamaError.transport(error)
+        }
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw OllamaError.http(status: status, body: String(data: data, encoding: .utf8) ?? "")
+        }
+        struct Tags: Decodable { let models: [Model] }
+        struct Model: Decodable { let name: String }
+        let parsed = try JSONDecoder().decode(Tags.self, from: data)
+        return parsed.models.map(\.name).sorted()
     }
 
     private func baseURL() throws -> URL {
@@ -125,6 +157,18 @@ final class OllamaService {
 
     private func webSearch() -> Bool {
         UserDefaults.standard.bool(forKey: "ollama.webSearch")
+    }
+
+    private func apiKey() -> String? {
+        KeychainService.shared.get(.ollamaAuthHeader)
+    }
+
+    private func authorizationHeader() -> String? {
+        guard let key = apiKey(), !key.isEmpty else { return nil }
+        if key.lowercased().hasPrefix("bearer ") || key.lowercased().hasPrefix("basic ") {
+            return key
+        }
+        return "Bearer \(key)"
     }
 
     private func buildPrompt(candidate: BuildingDetector.Candidate, tags: [String], gps: (lat: Double, lon: Double)?) -> String {

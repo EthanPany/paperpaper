@@ -34,9 +34,12 @@ struct paperpaperApp: App {
         Window("paperpaper", id: WindowID.main) {
             NowView()
                 .modelContainer(Store.shared.container)
+                .toolbar(removing: .title)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         }
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 960, height: 640)
+        .defaultSize(width: 1100, height: 720)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
