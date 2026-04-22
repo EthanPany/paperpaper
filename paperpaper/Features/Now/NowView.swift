@@ -3,150 +3,194 @@ import SwiftData
 
 struct NowView: View {
     @Query(sort: \Photo.lastSeenAt, order: .reverse) private var seenPhotos: [Photo]
+    @State private var engine = RotationEngine.shared
+    @State private var applyError: String?
 
     private var current: Photo? {
         seenPhotos.first(where: { $0.lastSeenAt != nil })
     }
 
     var body: some View {
-        if let photo = current {
-            CurrentPhotoView(photo: photo)
+        ZStack {
+            background
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                metadataBar
+            }
+        }
+        .frame(minWidth: 720, minHeight: 480)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Label("paperpaper", systemImage: "photo.on.rectangle.angled")
+                    .labelStyle(.titleAndIcon)
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    Task { await engine.rotateNow() }
+                } label: {
+                    Label("Next", systemImage: "forward.end")
+                }
+                .help("Rotate now")
+
+                if let photo = current {
+                    Button {
+                        Store.shared.toggleFavorite(photo)
+                    } label: {
+                        Image(systemName: photo.favoritedAt == nil ? "heart" : "heart.fill")
+                    }
+                    .help(photo.favoritedAt == nil ? "Favorite" : "Unfavorite")
+                }
+
+                SettingsLink {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .help("Open settings")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        if let photo = current, let url = photo.regularURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable().scaledToFill()
+                default:
+                    PlaceholderGradient()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .ignoresSafeArea()
         } else {
-            ContentUnavailableView(
-                "No wallpaper set yet",
-                systemImage: "photo",
-                description: Text("Go to Discover, pick an image, and hit 'Set as wallpaper'. Make sure your Unsplash key is saved in Connections first.")
-            )
+            PlaceholderGradient()
+                .ignoresSafeArea()
+                .overlay {
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo.stack")
+                            .font(.system(size: 48, weight: .light))
+                            .foregroundStyle(.white.opacity(0.85))
+                        Text("No wallpaper yet")
+                            .font(.title3.weight(.medium))
+                            .foregroundStyle(.white)
+                        Text("Add your Unsplash Access Key in Settings → Connections, then pick a photo in Discover.")
+                            .font(.callout)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 420)
+                        SettingsLink {
+                            Label("Open Settings", systemImage: "gearshape")
+                        }
+                        .buttonStyle(.glassProminent)
+                        .tint(.accentColor)
+                        .controlSize(.large)
+                        .padding(.top, 8)
+                    }
+                    .shadow(color: .black.opacity(0.4), radius: 6, x: 0, y: 1)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var metadataBar: some View {
+        if let photo = current {
+            MetadataBar(photo: photo, applyError: $applyError)
         }
     }
 }
 
-private struct CurrentPhotoView: View {
+private struct MetadataBar: View {
     let photo: Photo
-    @State private var applyError: String?
+    @Binding var applyError: String?
 
     var body: some View {
-        VStack(spacing: 16) {
-            AsyncImage(url: photo.regularURL) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default:
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(.quaternary)
-                        .overlay(ProgressView())
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if let architect = photo.enrichment?.architect, !architect.isEmpty {
+                    Text(architect)
+                        .font(.headline)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(1)
                 }
+                Spacer()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .padding([.horizontal, .top])
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(photo.enrichment?.buildingName ?? photo.photoDescription ?? "Untitled")
-                            .font(.title3.weight(.semibold))
-                        if let architect = photo.enrichment?.architect {
-                            Text(architect)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Button(action: toggleFavorite) {
-                        Image(systemName: photo.favoritedAt == nil ? "heart" : "heart.fill")
-                            .foregroundStyle(photo.favoritedAt == nil ? Color.secondary : Color.pink)
-                    }
-                    .buttonStyle(.borderless)
-                    .help(photo.favoritedAt == nil ? "Favorite" : "Unfavorite")
+            if let blurb = photo.enrichment?.oneSentence, !blurb.isEmpty {
+                Text(blurb)
+                    .font(.callout)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 14) {
+                if !photo.areaText.isEmpty {
+                    Label(photo.areaText, systemImage: "location")
                 }
-
-                if let blurb = photo.enrichment?.oneSentence {
-                    Text(blurb)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: 16) {
-                    if !photo.areaText.isEmpty {
-                        Label(photo.areaText, systemImage: "location")
-                    }
+                if !photo.authorName.isEmpty {
                     Label(photo.authorName, systemImage: "camera")
-                    if let url = photo.authorProfileURL {
-                        Link(destination: url) { Text("On Unsplash").font(.caption) }
-                    }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                if let exif = photo.exif {
-                    HStack(spacing: 16) {
-                        if !exif.cameraLine.isEmpty { Label(exif.cameraLine, systemImage: "camera.aperture") }
-                        if !exif.lensLine.isEmpty { Label(exif.lensLine, systemImage: "viewfinder") }
-                        if !exif.shotLine.isEmpty { Label(exif.shotLine, systemImage: "dial.high") }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    if exif.hasGPS, let lat = exif.latitude, let lon = exif.longitude {
-                        Label(String(format: "GPS %.4f, %.4f", lat, lon), systemImage: "mappin.and.ellipse")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                if let exif = photo.exif, !exif.shotLine.isEmpty {
+                    Label(exif.shotLine, systemImage: "dial.high")
                 }
-
-                if let err = applyError {
-                    Label(err, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-            .padding([.horizontal, .bottom])
-
-            HStack(spacing: 10) {
-                Button {
-                    Task { await reapply() }
-                } label: {
-                    Label("Re-apply", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.glassProminent)
-                .tint(.accentColor)
-
                 if let url = photo.authorProfileURL {
                     Link(destination: url) {
-                        Label("Open on Unsplash", systemImage: "arrow.up.right.square")
+                        Label("On Unsplash", systemImage: "arrow.up.right.square")
                     }
-                    .buttonStyle(.glass)
                 }
-
-                Spacer()
-
-                Button(role: .destructive) {
-                    Store.shared.hide(photo)
-                } label: {
-                    Label("Hide", systemImage: "eye.slash")
-                }
-                .buttonStyle(.glass)
-                .tint(.red)
             }
-            .padding([.horizontal, .bottom])
+            .font(.caption)
+            .foregroundStyle(.white.opacity(0.85))
+            .labelStyle(.titleAndIcon)
+
+            if let err = applyError {
+                Label(err, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .padding(8)
+                    .background(.red.opacity(0.7), in: Capsule())
+            }
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            LinearGradient(
+                colors: [.black.opacity(0), .black.opacity(0.75)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .shadow(color: .black.opacity(0.6), radius: 8, x: 0, y: 1)
     }
 
-    private func toggleFavorite() {
-        Store.shared.toggleFavorite(photo)
+    private var title: String {
+        if let name = photo.enrichment?.buildingName, !name.isEmpty { return name }
+        if let desc = photo.photoDescription, !desc.isEmpty { return desc }
+        if !photo.areaText.isEmpty { return photo.areaText }
+        return "Untitled"
     }
+}
 
-    private func reapply() async {
-        applyError = nil
-        do {
-            _ = try await WallpaperApplier.shared.reapply(photo: photo)
-        } catch {
-            applyError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
+struct PlaceholderGradient: View {
+    var body: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.09, green: 0.12, blue: 0.20),
+                Color(red: 0.16, green: 0.19, blue: 0.28),
+                Color(red: 0.32, green: 0.25, blue: 0.20),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 }
 
 #Preview {
     NowView()
         .modelContainer(Store.shared.container)
-        .frame(width: 900, height: 600)
+        .frame(width: 960, height: 640)
 }

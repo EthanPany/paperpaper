@@ -32,13 +32,22 @@ struct paperpaperApp: App {
         .menuBarExtraStyle(.window)
 
         Window("paperpaper", id: WindowID.main) {
-            MainWindow()
+            NowView()
                 .modelContainer(Store.shared.container)
         }
         .windowResizability(.contentSize)
+        .defaultSize(width: 960, height: 640)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
+
+        Settings {
+            SettingsScene()
+                .modelContainer(Store.shared.container)
+        }
         #else
         WindowGroup {
-            MainWindow()
+            NowView()
                 .modelContainer(Store.shared.container)
         }
         #endif

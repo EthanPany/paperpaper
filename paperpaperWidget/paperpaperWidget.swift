@@ -4,10 +4,7 @@ import SwiftUI
 @main
 struct paperpaperWidgetBundle: WidgetBundle {
     var body: some Widget {
-        BlurbWidget()
-        ExifWidget()
-        MinimalWidget()
-        PhotographerWidget()
+        paperpaperWidget()
     }
 }
 
@@ -32,55 +29,75 @@ struct PaperProvider: TimelineProvider {
     }
 }
 
-struct BlurbWidget: Widget {
+struct paperpaperWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "paperpaper.blurb", provider: PaperProvider()) { entry in
-            BlurbLayout(payload: entry.payload)
-                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
+        StaticConfiguration(kind: "paperpaper", provider: PaperProvider()) { entry in
+            WidgetContent(payload: entry.payload)
+                .containerBackground(for: .widget) {
+                    WidgetBackground(payload: entry.payload)
+                }
         }
-        .configurationDisplayName("paperpaper · Blurb")
-        .description("Building name, architect, one-sentence intro.")
+        .configurationDisplayName("paperpaper")
+        .description("The current wallpaper with its name and metadata.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
-struct ExifWidget: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "paperpaper.exif", provider: PaperProvider()) { entry in
-            ExifLayout(payload: entry.payload)
-                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
+private struct WidgetContent: View {
+    let payload: WidgetPayload
+    @Environment(\.widgetFamily) private var family
+
+    private var title: String {
+        if let n = payload.buildingName, !n.isEmpty { return n }
+        if !payload.area.isEmpty { return payload.area }
+        return "paperpaper"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Spacer(minLength: 0)
+
+            Text(title)
+                .font(family == .systemSmall ? .headline : .title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(family == .systemSmall ? 2 : 1)
+
+            if family != .systemSmall, let architect = payload.architect, !architect.isEmpty {
+                Text(architect)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+            }
+
+            if family == .systemLarge, let sentence = payload.oneSentence, !sentence.isEmpty {
+                Text(sentence)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(3)
+                    .padding(.top, 2)
+            }
+
+            HStack(spacing: 8) {
+                if !payload.area.isEmpty {
+                    Label(payload.area, systemImage: "location")
+                        .labelStyle(.titleAndIcon)
+                }
+                if family == .systemLarge, let shot = payload.shotLine, !shot.isEmpty {
+                    Text("·")
+                    Text(shot)
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.white.opacity(0.8))
+            .lineLimit(1)
+            .padding(.top, family == .systemSmall ? 2 : 4)
         }
-        .configurationDisplayName("paperpaper · EXIF")
-        .description("Camera, lens, aperture, ISO, and GPS from the current photo.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .padding(family == .systemSmall ? 12 : 16)
+        .shadow(color: .black.opacity(0.85), radius: 6, x: 0, y: 1)
     }
 }
 
-struct MinimalWidget: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "paperpaper.minimal", provider: PaperProvider()) { entry in
-            MinimalLayout(payload: entry.payload)
-                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
-        }
-        .configurationDisplayName("paperpaper · Minimal")
-        .description("Just the name.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
-    }
-}
-
-struct PhotographerWidget: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "paperpaper.photographer", provider: PaperProvider()) { entry in
-            PhotographerLayout(payload: entry.payload)
-                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
-        }
-        .configurationDisplayName("paperpaper · Photographer")
-        .description("Author, area, and Unsplash attribution.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
-    }
-}
-
-struct ThumbnailBackground: View {
+private struct WidgetBackground: View {
     let payload: WidgetPayload
 
     var body: some View {
@@ -90,16 +107,23 @@ struct ThumbnailBackground: View {
                     .resizable()
                     .scaledToFill()
                 LinearGradient(
-                    colors: [.black.opacity(0.05), .black.opacity(0.55)],
+                    colors: [.black.opacity(0), .black.opacity(0.65)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             } else {
                 LinearGradient(
-                    colors: [Color.gray.opacity(0.4), Color.black.opacity(0.65)],
-                    startPoint: .top,
-                    endPoint: .bottom
+                    colors: [
+                        Color(red: 0.09, green: 0.12, blue: 0.20),
+                        Color(red: 0.16, green: 0.19, blue: 0.28),
+                        Color(red: 0.32, green: 0.25, blue: 0.20),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
                 )
+                Image(systemName: "building.columns")
+                    .font(.system(size: 60, weight: .ultraLight))
+                    .foregroundStyle(.white.opacity(0.12))
             }
         }
     }
@@ -135,7 +159,7 @@ extension WidgetPayload {
 }
 
 #Preview(as: .systemMedium) {
-    BlurbWidget()
+    paperpaperWidget()
 } timeline: {
     PaperEntry(date: .now, payload: .placeholder)
 }
