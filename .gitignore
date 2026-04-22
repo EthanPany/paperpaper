@@ -81,3 +81,6 @@ Config.local.xcconfig
 .idea/
 *.swp
 *.swo
+
+# Personal notes (not part of the project)
+Project BREW.md
