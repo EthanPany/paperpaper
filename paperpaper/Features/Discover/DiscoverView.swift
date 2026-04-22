@@ -11,13 +11,24 @@ struct DiscoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 10) {
                 TextField("Search Unsplash", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { Task { await search() } }
-                Button("Search") { Task { await search() } }
-                    .disabled(query.isEmpty)
-                Button("Shuffle Architecture") { Task { await shuffle() } }
+                Button {
+                    Task { await search() }
+                } label: {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.accentColor)
+                .disabled(query.isEmpty)
+                Button {
+                    Task { await shuffle() }
+                } label: {
+                    Label("Shuffle Architecture", systemImage: "shuffle")
+                }
+                .buttonStyle(.glass)
             }
             .padding()
 
@@ -135,12 +146,18 @@ private struct DiscoverDetail: View {
                 Text(photo.description ?? photo.alt_description ?? "Photo")
                     .font(.headline)
                 Spacer()
-                Button(isApplying ? "Setting…" : "Set as wallpaper") {
+                Button {
                     Task { await apply() }
+                } label: {
+                    Label(isApplying ? "Setting…" : "Set as wallpaper", systemImage: "photo.on.rectangle")
                 }
+                .buttonStyle(.glassProminent)
+                .tint(.accentColor)
                 .disabled(isApplying)
                 .keyboardShortcut(.defaultAction)
+
                 Button("Close") { dismiss() }
+                    .buttonStyle(.glass)
             }
             .padding()
 

@@ -135,9 +135,11 @@ final class WallpaperApplier {
     }
 
     private func writeWidgetPayload(for photo: Photo, file: URL) {
+        let imageFileName = copyImageToAppGroup(from: file, photoID: photo.unsplashID)
+
         let payload = WidgetPayload(
             unsplashID: photo.unsplashID,
-            imageFilePath: file.path,
+            imageFileName: imageFileName,
             buildingName: photo.enrichment?.buildingName,
             architect: photo.enrichment?.architect,
             year: photo.enrichment?.year,
@@ -158,6 +160,20 @@ final class WallpaperApplier {
         #if canImport(WidgetKit)
         WidgetCenter.shared.reloadAllTimelines()
         #endif
+    }
+
+    private func copyImageToAppGroup(from sourceFile: URL, photoID: String) -> String {
+        let fm = FileManager.default
+        let dir = WidgetPayload.widgetDir()
+        let name = "current.jpg"
+        let destination = dir.appending(path: name)
+        try? fm.removeItem(at: destination)
+        do {
+            try fm.copyItem(at: sourceFile, to: destination)
+            return name
+        } catch {
+            return ""
+        }
     }
 
     private func rewriteWidgetPayloadIfCurrent(_ photo: Photo) {

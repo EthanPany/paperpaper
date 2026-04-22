@@ -101,15 +101,31 @@ private struct CurrentPhotoView: View {
             }
             .padding([.horizontal, .bottom])
 
-            HStack(spacing: 8) {
-                Button("Re-apply") { Task { await reapply() } }
+            HStack(spacing: 10) {
+                Button {
+                    Task { await reapply() }
+                } label: {
+                    Label("Re-apply", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.accentColor)
+
                 if let url = photo.authorProfileURL {
-                    Link("Open on Unsplash", destination: url)
+                    Link(destination: url) {
+                        Label("Open on Unsplash", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.glass)
                 }
+
                 Spacer()
-                Button("Hide", role: .destructive) {
+
+                Button(role: .destructive) {
                     Store.shared.hide(photo)
+                } label: {
+                    Label("Hide", systemImage: "eye.slash")
                 }
+                .buttonStyle(.glass)
+                .tint(.red)
             }
             .padding([.horizontal, .bottom])
         }

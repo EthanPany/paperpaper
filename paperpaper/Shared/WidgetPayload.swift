@@ -2,7 +2,7 @@ import Foundation
 
 struct WidgetPayload: Codable, Sendable {
     var unsplashID: String
-    var imageFilePath: String
+    var imageFileName: String
     var buildingName: String?
     var architect: String?
     var year: Int?
@@ -21,26 +21,39 @@ struct WidgetPayload: Codable, Sendable {
 
     static let appGroup = "group.ep.paperpaper"
 
-    static func fileURL() -> URL {
+    static func containerURL() -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+    }
+
+    static func widgetDir() -> URL {
         let fm = FileManager.default
-        if let group = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+        if let group = containerURL() {
             let dir = group.appending(path: "widget")
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            return dir.appending(path: "payload.json")
+            return dir
         }
         let support = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)) ?? fm.temporaryDirectory
         let dir = support.appending(path: "paperpaper/widget")
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appending(path: "payload.json")
+        return dir
+    }
+
+    static func payloadFileURL() -> URL {
+        widgetDir().appending(path: "payload.json")
+    }
+
+    func resolvedImageURL() -> URL? {
+        guard !imageFileName.isEmpty else { return nil }
+        return WidgetPayload.widgetDir().appending(path: imageFileName)
     }
 
     static func read() -> WidgetPayload? {
-        guard let data = try? Data(contentsOf: fileURL()) else { return nil }
+        guard let data = try? Data(contentsOf: payloadFileURL()) else { return nil }
         return try? JSONDecoder().decode(WidgetPayload.self, from: data)
     }
 
     func write() throws {
         let data = try JSONEncoder().encode(self)
-        try data.write(to: Self.fileURL(), options: .atomic)
+        try data.write(to: Self.payloadFileURL(), options: .atomic)
     }
 }

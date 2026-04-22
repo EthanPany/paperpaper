@@ -2,7 +2,7 @@ import Foundation
 
 struct WidgetPayload: Codable, Sendable {
     var unsplashID: String
-    var imageFilePath: String
+    var imageFileName: String
     var buildingName: String?
     var architect: String?
     var year: Int?
@@ -21,14 +21,21 @@ struct WidgetPayload: Codable, Sendable {
 
     static let appGroup = "group.ep.paperpaper"
 
-    static func fileURL() -> URL? {
-        FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroup)?
-            .appending(path: "widget/payload.json")
+    static func containerURL() -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+    }
+
+    static func payloadFileURL() -> URL? {
+        containerURL()?.appending(path: "widget/payload.json")
+    }
+
+    func resolvedImageURL() -> URL? {
+        guard !imageFileName.isEmpty, let container = WidgetPayload.containerURL() else { return nil }
+        return container.appending(path: "widget/\(imageFileName)")
     }
 
     static func read() -> WidgetPayload? {
-        guard let url = fileURL(), let data = try? Data(contentsOf: url) else { return nil }
+        guard let url = payloadFileURL(), let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(WidgetPayload.self, from: data)
     }
 }

@@ -4,70 +4,91 @@ import SwiftUI
 @main
 struct paperpaperWidgetBundle: WidgetBundle {
     var body: some Widget {
-        paperpaperWidget()
-    }
-}
-
-struct Provider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> PaperEntry {
-        PaperEntry(date: .now, configuration: ConfigurationAppIntent(), payload: .placeholder)
-    }
-
-    func snapshot(for configuration: ConfigurationAppIntent, in context: Context) async -> PaperEntry {
-        let payload = WidgetPayload.read() ?? .placeholder
-        return PaperEntry(date: .now, configuration: configuration, payload: payload)
-    }
-
-    func timeline(for configuration: ConfigurationAppIntent, in context: Context) async -> Timeline<PaperEntry> {
-        let payload = WidgetPayload.read() ?? .placeholder
-        let entry = PaperEntry(date: .now, configuration: configuration, payload: payload)
-        let next = Date.now.addingTimeInterval(15 * 60)
-        return Timeline(entries: [entry], policy: .after(next))
+        BlurbWidget()
+        ExifWidget()
+        MinimalWidget()
+        PhotographerWidget()
     }
 }
 
 struct PaperEntry: TimelineEntry {
     let date: Date
-    let configuration: ConfigurationAppIntent
     let payload: WidgetPayload
 }
 
-struct paperpaperWidgetEntryView: View {
-    var entry: Provider.Entry
+struct PaperProvider: TimelineProvider {
+    func placeholder(in context: Context) -> PaperEntry {
+        PaperEntry(date: .now, payload: .placeholder)
+    }
 
-    var body: some View {
-        switch entry.configuration.layout {
-        case .blurb: BlurbLayout(payload: entry.payload)
-        case .exif: ExifLayout(payload: entry.payload)
-        case .minimal: MinimalLayout(payload: entry.payload)
-        case .photographer: PhotographerLayout(payload: entry.payload)
-        }
+    func getSnapshot(in context: Context, completion: @escaping (PaperEntry) -> Void) {
+        completion(PaperEntry(date: .now, payload: WidgetPayload.read() ?? .placeholder))
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<PaperEntry>) -> Void) {
+        let entry = PaperEntry(date: .now, payload: WidgetPayload.read() ?? .placeholder)
+        let next = Date.now.addingTimeInterval(15 * 60)
+        completion(Timeline(entries: [entry], policy: .after(next)))
     }
 }
 
-struct paperpaperWidget: Widget {
-    let kind: String = "paperpaperWidget"
-
+struct BlurbWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: kind, intent: ConfigurationAppIntent.self, provider: Provider()) { entry in
-            paperpaperWidgetEntryView(entry: entry)
-                .containerBackground(for: .widget) {
-                    ThumbnailBackground(payload: entry.payload)
-                }
+        StaticConfiguration(kind: "paperpaper.blurb", provider: PaperProvider()) { entry in
+            BlurbLayout(payload: entry.payload)
+                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
         }
-        .configurationDisplayName("paperpaper")
-        .description("Current wallpaper + metadata.")
+        .configurationDisplayName("paperpaper · Blurb")
+        .description("Building name, architect, one-sentence intro.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
-private struct ThumbnailBackground: View {
+struct ExifWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "paperpaper.exif", provider: PaperProvider()) { entry in
+            ExifLayout(payload: entry.payload)
+                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
+        }
+        .configurationDisplayName("paperpaper · EXIF")
+        .description("Camera, lens, aperture, ISO, and GPS from the current photo.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+struct MinimalWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "paperpaper.minimal", provider: PaperProvider()) { entry in
+            MinimalLayout(payload: entry.payload)
+                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
+        }
+        .configurationDisplayName("paperpaper · Minimal")
+        .description("Just the name.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+struct PhotographerWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "paperpaper.photographer", provider: PaperProvider()) { entry in
+            PhotographerLayout(payload: entry.payload)
+                .containerBackground(for: .widget) { ThumbnailBackground(payload: entry.payload) }
+        }
+        .configurationDisplayName("paperpaper · Photographer")
+        .description("Author, area, and Unsplash attribution.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+struct ThumbnailBackground: View {
     let payload: WidgetPayload
 
     var body: some View {
         ZStack {
             if let image = loadImage() {
-                image.resizable().scaledToFill()
+                image
+                    .resizable()
+                    .scaledToFill()
                 LinearGradient(
                     colors: [.black.opacity(0.05), .black.opacity(0.55)],
                     startPoint: .top,
@@ -75,7 +96,7 @@ private struct ThumbnailBackground: View {
                 )
             } else {
                 LinearGradient(
-                    colors: [Color.gray.opacity(0.35), Color.black.opacity(0.6)],
+                    colors: [Color.gray.opacity(0.4), Color.black.opacity(0.65)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -84,9 +105,9 @@ private struct ThumbnailBackground: View {
     }
 
     private func loadImage() -> Image? {
-        guard !payload.imageFilePath.isEmpty,
-              FileManager.default.fileExists(atPath: payload.imageFilePath),
-              let nsImage = NSImage(contentsOfFile: payload.imageFilePath) else { return nil }
+        guard let url = payload.resolvedImageURL(),
+              FileManager.default.fileExists(atPath: url.path),
+              let nsImage = NSImage(contentsOf: url) else { return nil }
         return Image(nsImage: nsImage)
     }
 }
@@ -94,7 +115,7 @@ private struct ThumbnailBackground: View {
 extension WidgetPayload {
     static let placeholder = WidgetPayload(
         unsplashID: "placeholder",
-        imageFilePath: "",
+        imageFileName: "",
         buildingName: "Sagrada Família",
         architect: "Antoni Gaudí",
         year: 1882,
@@ -114,7 +135,7 @@ extension WidgetPayload {
 }
 
 #Preview(as: .systemMedium) {
-    paperpaperWidget()
+    BlurbWidget()
 } timeline: {
-    PaperEntry(date: .now, configuration: ConfigurationAppIntent(), payload: .placeholder)
+    PaperEntry(date: .now, payload: .placeholder)
 }
