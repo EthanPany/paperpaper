@@ -281,19 +281,25 @@ struct RotationView: View {
         Section("Filters") {
             HStack {
                 Text("Aspect")
-                    .frame(width: 70, alignment: .leading)
-                Text(String(format: "%.1f – %.1f", filters.minAspect, filters.maxAspect))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 90, alignment: .leading)
-                Slider(value: Binding(
+                Spacer()
+                Stepper(value: Binding(
                     get: { filters.minAspect },
                     set: { filters.minAspect = min($0, filters.maxAspect); try? Store.shared.context.save() }
-                ), in: 0.5...3.0, step: 0.1)
-                Slider(value: Binding(
+                ), in: 0.5...3.0, step: 0.1) {
+                    Text(String(format: "min %.1f", filters.minAspect))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .fixedSize()
+                Stepper(value: Binding(
                     get: { filters.maxAspect },
                     set: { filters.maxAspect = max($0, filters.minAspect); try? Store.shared.context.save() }
-                ), in: 0.5...3.0, step: 0.1)
+                ), in: 0.5...3.0, step: 0.1) {
+                    Text(String(format: "max %.1f", filters.maxAspect))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .fixedSize()
             }
             TextField("Country contains", text: Binding(
                 get: { filters.countryContains ?? "" },

@@ -35,7 +35,7 @@ struct paperpaperApp: App {
         .menuBarExtraStyle(.window)
 
         Window("paperpaper", id: WindowID.main) {
-            NowView()
+            MainWindowRouter()
                 .modelContainer(Store.shared.container)
                 .toolbar(removing: .title)
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
@@ -46,14 +46,9 @@ struct paperpaperApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
-
-        Settings {
-            SettingsScene()
-                .modelContainer(Store.shared.container)
-        }
         #else
         WindowGroup {
-            NowView()
+            MainWindowRouter()
                 .modelContainer(Store.shared.container)
         }
         #endif

@@ -31,19 +31,29 @@ struct AdvancedView: View {
             }
 
             Section("Networking") {
-                HStack {
-                    Text("Timeout")
-                    Slider(value: $networkTimeout, in: 5...120, step: 1)
-                    Text("\(Int(networkTimeout)) s")
-                        .monospacedDigit()
-                        .frame(width: 60, alignment: .trailing)
+                Stepper(value: Binding(
+                    get: { Int(networkTimeout) },
+                    set: { networkTimeout = Double($0) }
+                ), in: 5...120) {
+                    HStack {
+                        Text("Timeout")
+                        Spacer()
+                        Text("\(Int(networkTimeout)) s")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                HStack {
-                    Text("Retries")
-                    Slider(value: $retryCount, in: 0...10, step: 1)
-                    Text("\(Int(retryCount))")
-                        .monospacedDigit()
-                        .frame(width: 40, alignment: .trailing)
+                Stepper(value: Binding(
+                    get: { Int(retryCount) },
+                    set: { retryCount = Double($0) }
+                ), in: 0...10) {
+                    HStack {
+                        Text("Retries")
+                        Spacer()
+                        Text("\(Int(retryCount))")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 

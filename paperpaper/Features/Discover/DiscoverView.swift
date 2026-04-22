@@ -1,11 +1,16 @@
 import SwiftUI
 
 struct DiscoverView: View {
+    @AppStorage("agent.enabled") private var agentEnabled: Bool = false
     @State private var query: String = "architecture"
+    @State private var agentPrompt: String = ""
+    @State private var agentLocation: String = ""
     @State private var results: [UnsplashPhoto] = []
     @State private var isLoading: Bool = false
     @State private var error: String?
     @State private var selected: UnsplashPhoto?
+    @State private var agentSteps: [String] = []
+    @State private var agentParagraph: String?
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
 
@@ -31,6 +36,45 @@ struct DiscoverView: View {
                 .buttonStyle(.glass)
             }
             .padding()
+
+            if agentEnabled {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        TextField("Smart search (prompt)", text: $agentPrompt)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Location (optional)", text: $agentLocation)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 260)
+                        Button {
+                            Task { await smartSearch() }
+                        } label: {
+                            Label("Run", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.glassProminent)
+                        .tint(.purple)
+                        .disabled(agentPrompt.isEmpty)
+                    }
+                    if !agentSteps.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(0..<agentSteps.count, id: \.self) { i in
+                                Text(agentSteps[i])
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    if let para = agentParagraph {
+                        Text(para)
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                            .padding(10)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            }
 
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -89,6 +133,31 @@ struct DiscoverView: View {
         error = nil
         do {
             results = try await UnsplashService.shared.randomArchitecture(count: 24)
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            results = []
+        }
+        isLoading = false
+    }
+
+    private func smartSearch() async {
+        isLoading = true
+        error = nil
+        agentSteps = []
+        agentParagraph = nil
+        do {
+            let out = try await SearchAgent.shared.run(
+                SearchAgent.Request(
+                    prompt: agentPrompt,
+                    location: agentLocation.isEmpty ? nil : agentLocation,
+                    includeWebResearch: UserDefaults.standard.bool(forKey: "ollama.webSearch"),
+                    includeParagraph: true
+                )
+            )
+            results = [out.photo]
+            agentSteps = out.broadeningSteps
+            agentParagraph = out.paragraph
+            selected = out.photo
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             results = []

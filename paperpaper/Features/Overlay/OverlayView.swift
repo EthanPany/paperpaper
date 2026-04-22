@@ -48,25 +48,29 @@ struct OverlayView: View {
                         Text("Bottom left").tag(OverlayCorner.bottomLeft)
                         Text("Bottom right").tag(OverlayCorner.bottomRight)
                     }
-                    HStack {
-                        Text("Margin")
-                        Slider(value: Binding(
-                            get: { style.marginPoints },
-                            set: { style.marginPoints = $0; save() }
-                        ), in: 0...200)
-                        Text("\(Int(style.marginPoints)) px")
-                            .monospacedDigit()
-                            .frame(width: 70, alignment: .trailing)
+                    Stepper(value: Binding(
+                        get: { Int(style.marginPoints) },
+                        set: { style.marginPoints = Double($0); save() }
+                    ), in: 0...200, step: 4) {
+                        HStack {
+                            Text("Margin")
+                            Spacer()
+                            Text("\(Int(style.marginPoints)) px")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    HStack {
-                        Text("Size")
-                        Slider(value: Binding(
-                            get: { style.fontSize },
-                            set: { style.fontSize = $0; save() }
-                        ), in: 8...96)
-                        Text("\(Int(style.fontSize)) pt")
-                            .monospacedDigit()
-                            .frame(width: 70, alignment: .trailing)
+                    Stepper(value: Binding(
+                        get: { Int(style.fontSize) },
+                        set: { style.fontSize = Double($0); save() }
+                    ), in: 8...96) {
+                        HStack {
+                            Text("Size")
+                            Spacer()
+                            Text("\(Int(style.fontSize)) pt")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     TextField("Hex color (e.g. #FFFFFFEE)", text: Binding(
                         get: { style.hexColor },

@@ -1,7 +1,7 @@
 import SwiftUI
 import SwiftData
 
-struct SyncView: View {
+struct SyncPane: View {
     @AppStorage("sync.enabled") private var syncEnabled: Bool = false
     @AppStorage("sync.settings") private var syncSettings: Bool = true
     @AppStorage("sync.history") private var syncHistory: Bool = true
@@ -9,32 +9,31 @@ struct SyncView: View {
     @AppStorage("sync.keys") private var syncKeys: Bool = false
 
     @Query private var prefs: [SyncPrefs]
+    @State private var showAdvanced: Bool = false
+
     private var record: SyncPrefs { prefs.first ?? Store.shared.syncPrefs() }
 
     var body: some View {
         Form {
-            Section {
+            Section("iCloud sync") {
                 Toggle("Enable iCloud sync", isOn: $syncEnabled)
                     .onChange(of: syncEnabled) { _, newValue in
                         record.enabled = newValue
                         try? Store.shared.context.save()
                     }
                 Text(syncEnabled
-                     ? "Quit and relaunch paperpaper after toggling. The SwiftData store is reconfigured at launch."
+                     ? "Quit and relaunch paperpaper. The SwiftData store is reconfigured at launch."
                      : "Off: all data stays on this Mac only.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("Last sync", value: record.lastSyncAt?.formatted() ?? "—")
             }
 
-            Section("What to sync (when enabled)") {
-                Toggle("Settings (rotation, filters, overlay)", isOn: $syncSettings)
-                    .disabled(!syncEnabled)
-                Toggle("History and favorites", isOn: $syncHistory)
-                    .disabled(!syncEnabled)
-                Toggle("Enrichment cache (Ollama results)", isOn: $syncEnrichment)
-                    .disabled(!syncEnabled)
-                Toggle("API keys (via iCloud Keychain)", isOn: $syncKeys)
+            Section("What to sync") {
+                Toggle("Settings", isOn: $syncSettings).disabled(!syncEnabled)
+                Toggle("History and favorites", isOn: $syncHistory).disabled(!syncEnabled)
+                Toggle("Enrichment cache", isOn: $syncEnrichment).disabled(!syncEnabled)
+                Toggle("API keys (iCloud Keychain)", isOn: $syncKeys)
                     .disabled(!syncEnabled)
                     .onChange(of: syncKeys) { _, newValue in
                         if let key = KeychainService.shared.get(.unsplashAccessKey) {
@@ -46,22 +45,28 @@ struct SyncView: View {
                     }
             }
 
-            Section("Requirements") {
+            DisclosureGroup(isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("• iCloud capability on the paperpaper target with a CloudKit container must be set up in Xcode.")
-                    Text("• The Mac must be signed into iCloud.")
-                    Text("• Not synced: image bytes, current-wallpaper state, and Space identifiers (all per-device).")
+                    Text("• iCloud capability (CloudKit) must be enabled on the paperpaper target in Xcode.")
+                    Text("• Not synced: image bytes, current-wallpaper state, Space identifiers.")
+                    Text("• When off, SwiftData store is local-only (cloudKitDatabase: .none).")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            } label: {
+                Label("Advanced", systemImage: "ellipsis.circle")
             }
         }
         .formStyle(.grouped)
     }
 }
 
+struct SyncView: View {
+    var body: some View { SyncPane() }
+}
+
 #Preview {
-    SyncView()
+    SyncPane()
         .modelContainer(Store.shared.container)
-        .frame(width: 900, height: 600)
+        .frame(width: 720, height: 600)
 }

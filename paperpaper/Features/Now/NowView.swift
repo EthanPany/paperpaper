@@ -102,15 +102,15 @@ private struct PhotoMetadataCard: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.55), radius: 2, x: 0, y: 1)
+                    .font(.system(.title2, design: .serif).weight(.semibold))
+                    .foregroundStyle(Color(white: 0.96))
+                    .shadow(color: .black.opacity(0.5), radius: 3, x: 0, y: 1)
                     .lineLimit(2)
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.92))
-                        .shadow(color: .black.opacity(0.55), radius: 2, x: 0, y: 1)
+                        .foregroundStyle(Color(white: 0.85))
+                        .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
                         .lineLimit(1)
                 }
             }
@@ -146,12 +146,8 @@ private struct PhotoMetadataCard: View {
         }
         .padding(18)
         .frame(maxWidth: 560, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 18)
-                .fill(.black.opacity(0.42))
-        }
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-        .shadow(color: .black.opacity(0.45), radius: 18, x: 0, y: 6)
+        .glassEffect(.regular.tint(.black.opacity(0.12)), in: RoundedRectangle(cornerRadius: 18))
+        .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 6)
     }
 
     private var title: String {
