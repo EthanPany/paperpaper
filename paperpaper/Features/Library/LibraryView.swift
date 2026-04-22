@@ -26,7 +26,7 @@ struct LibraryView: View {
                 ContentUnavailableView(
                     showFavoritesOnly ? "No favorites yet" : "No history yet",
                     systemImage: "square.grid.2x2",
-                    description: Text(showFavoritesOnly ? "Favorite a photo from the Now tab to see it here." : "Photos you've seen as wallpaper will show up here.")
+                    description: Text(showFavoritesOnly ? "Favorite a photo from the main window to see it here." : "Photos you've seen as wallpaper will show up here.")
                 )
                 .frame(maxWidth: .infinity, minHeight: 400)
             } else {
@@ -47,16 +47,36 @@ private struct PhotoTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.quaternary)
-                .aspectRatio(CGFloat(photo.aspect), contentMode: .fit)
-                .overlay(alignment: .topTrailing) {
-                    if photo.favoritedAt != nil {
-                        Image(systemName: "heart.fill")
-                            .foregroundStyle(.pink)
-                            .padding(8)
+            Group {
+                if let url = photo.regularURL ?? photo.thumbURL {
+                    AsyncImage(url: url, transaction: Transaction(animation: .easeInOut(duration: 0.2))) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                        case .failure:
+                            Color.gray.opacity(0.15)
+                        case .empty:
+                            Color.gray.opacity(0.1).overlay(ProgressView().controlSize(.small))
+                        @unknown default:
+                            Color.gray.opacity(0.1)
+                        }
                     }
+                } else {
+                    Color.gray.opacity(0.15)
                 }
+            }
+            .aspectRatio(CGFloat(photo.aspect > 0 ? photo.aspect : 1.5), contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .topTrailing) {
+                if photo.favoritedAt != nil {
+                    Image(systemName: "heart.fill")
+                        .foregroundStyle(.pink)
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .padding(6)
+                }
+            }
+
             Text(photo.enrichment?.buildingName ?? photo.photoDescription ?? "Untitled")
                 .font(.subheadline)
                 .lineLimit(1)

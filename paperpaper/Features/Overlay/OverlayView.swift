@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+#if os(macOS)
+import AppKit
+#endif
 
 struct OverlayView: View {
     @Query private var styles: [OverlayStyle]
@@ -11,12 +14,20 @@ struct OverlayView: View {
     var body: some View {
         HStack(spacing: 0) {
             Form {
-                Section("Text") {
-                    Toggle("Burn in text on wallpaper", isOn: Binding(
+                Section("Burn in text") {
+                    Toggle("Burn overlay into applied wallpaper", isOn: Binding(
                         get: { style.enabled },
                         set: { style.enabled = $0; save() }
                     ))
-                    Picker("Content", selection: Binding(
+                    Text(style.enabled
+                         ? "On: a composited JPEG replaces the original when set as wallpaper."
+                         : "Off: the preview still shows you where the overlay would land, but the original image is applied.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Content") {
+                    Picker("Text", selection: Binding(
                         get: { style.content },
                         set: { style.content = $0; save() }
                     )) {
@@ -25,6 +36,9 @@ struct OverlayView: View {
                         Text("EXIF one line").tag(OverlayContent.exifOneLine)
                         Text("Photographer + area").tag(OverlayContent.photographerAndArea)
                     }
+                }
+
+                Section("Layout") {
                     Picker("Corner", selection: Binding(
                         get: { style.corner },
                         set: { style.corner = $0; save() }
@@ -69,9 +83,38 @@ struct OverlayView: View {
 
             Divider()
 
-            OverlayPreview(photo: previewPhoto, style: style)
-                .padding()
+            VStack(alignment: .leading, spacing: 8) {
+                Text(previewLabel)
+                    .font(.caption2.weight(.semibold))
+                    .textCase(.uppercase)
+                    .tracking(1.2)
+                    .foregroundStyle(.secondary)
+                OverlayPreview(photo: previewPhoto, style: style)
+                    .aspectRatio(screenAspectRatio, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .padding(16)
         }
+    }
+
+    private var previewLabel: String {
+        #if os(macOS)
+        if let screen = NSScreen.main {
+            let w = Int(screen.frame.width)
+            let h = Int(screen.frame.height)
+            return "Preview · \(w) × \(h)"
+        }
+        #endif
+        return "Preview"
+    }
+
+    private var screenAspectRatio: CGFloat {
+        #if os(macOS)
+        if let screen = NSScreen.main {
+            return screen.frame.width / max(screen.frame.height, 1)
+        }
+        #endif
+        return 16.0 / 10.0
     }
 
     private func save() {
@@ -90,30 +133,45 @@ private struct OverlayPreview: View {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let img): img.resizable().scaledToFill()
-                        default: Color.gray.opacity(0.2)
+                        default: PlaceholderGradient()
                         }
                     }
                 } else {
-                    Color.gray.opacity(0.2)
+                    PlaceholderGradient()
                 }
 
-                if style.enabled {
-                    overlayText
-                        .padding(style.marginPoints)
-                        .frame(maxWidth: geo.size.width, maxHeight: geo.size.height, alignment: alignment)
-                }
+                overlayText(geo: geo)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(.quaternary, lineWidth: 1)
+            )
         }
     }
 
-    private var overlayText: some View {
+    private func overlayText(geo: GeometryProxy) -> some View {
         let text = photo.map { OverlayRenderer.text(for: $0, style: style) } ?? "Preview text"
         let display = text.isEmpty ? "Preview text" : text
+
+        // Scale the font/margin the same way the screen -> preview size scales.
+        // previewScale = previewWidth / actualScreenWidth.
+        #if os(macOS)
+        let screenWidth = NSScreen.main?.frame.width ?? 1920
+        #else
+        let screenWidth: CGFloat = 1920
+        #endif
+        let scale = geo.size.width / screenWidth
+        let previewFontSize = max(6, style.fontSize * scale)
+        let previewMargin = max(2, style.marginPoints * scale)
+
         return Text(display)
-            .font(.system(size: style.fontSize))
-            .foregroundStyle(color)
-            .shadow(color: .black.opacity(style.dropShadow ? 0.7 : 0), radius: style.dropShadow ? 6 : 0, x: 0, y: style.dropShadow ? -2 : 0)
+            .font(.system(size: previewFontSize))
+            .foregroundStyle(color.opacity(style.enabled ? 1 : 0.55))
+            .shadow(color: .black.opacity(style.dropShadow ? 0.7 : 0), radius: style.dropShadow ? 6 : 0, x: 0, y: style.dropShadow ? -1 : 0)
+            .padding(previewMargin)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: alignment)
     }
 
     private var alignment: Alignment {

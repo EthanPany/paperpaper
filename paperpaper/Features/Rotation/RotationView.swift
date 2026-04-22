@@ -7,192 +7,352 @@ struct RotationView: View {
     @State private var engine = RotationEngine.shared
     @State private var newTopic: String = ""
     @State private var newExclusion: String = ""
+    @State private var customIntervalValue: Int = 60
+    @State private var customIntervalUnit: IntervalUnit = .minutes
+    @State private var showingCustomInterval: Bool = false
+    @State private var newTimeHour: Int = 9
+    @State private var newTimeMinute: Int = 0
 
     private var rule: RotationRule { rules.first ?? Store.shared.rule() }
     private var filters: FilterPrefs { filterRows.first ?? Store.shared.filters() }
 
+    private let presetIntervals: [IntervalPreset] = [
+        IntervalPreset(label: "15 min", seconds: 15 * 60),
+        IntervalPreset(label: "30 min", seconds: 30 * 60),
+        IntervalPreset(label: "1 h", seconds: 60 * 60),
+        IntervalPreset(label: "2 h", seconds: 120 * 60),
+        IntervalPreset(label: "4 h", seconds: 240 * 60),
+        IntervalPreset(label: "12 h", seconds: 720 * 60),
+        IntervalPreset(label: "24 h", seconds: 1440 * 60),
+    ]
+
     var body: some View {
         Form {
-            Section("Schedule") {
-                Toggle("Enable rotation", isOn: Binding(
-                    get: { rule.enabled },
-                    set: { newValue in
-                        rule.enabled = newValue
-                        try? Store.shared.context.save()
-                        if newValue { engine.start() } else { engine.stop() }
+            scheduleSection
+            modeSection
+            daysSection
+            spacesSection
+            repeatsSection
+            topicsSection
+            filtersSection
+            statusSection
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Sections
+
+    private var scheduleSection: some View {
+        Section("Rotation") {
+            Toggle("Enabled", isOn: Binding(
+                get: { rule.enabled },
+                set: { newValue in
+                    rule.enabled = newValue
+                    try? Store.shared.context.save()
+                    if newValue { engine.start() } else { engine.stop() }
+                }
+            ))
+
+            Picker("Mode", selection: Binding(
+                get: { rule.scheduleMode },
+                set: { rule.scheduleMode = $0; try? Store.shared.context.save() }
+            )) {
+                Text("Every N minutes").tag(ScheduleMode.interval)
+                Text("At specific times").tag(ScheduleMode.specificTimes)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modeSection: some View {
+        if rule.scheduleMode == .interval {
+            Section("Interval") {
+                let isPreset = presetIntervals.contains { $0.seconds == rule.intervalSeconds } && !showingCustomInterval
+                HStack(spacing: 6) {
+                    ForEach(0..<presetIntervals.count, id: \.self) { index in
+                        let preset = presetIntervals[index]
+                        let selected = isPreset && rule.intervalSeconds == preset.seconds
+                        Button {
+                            rule.intervalSeconds = preset.seconds
+                            showingCustomInterval = false
+                            try? Store.shared.context.save()
+                        } label: {
+                            Text(preset.label)
+                                .font(.caption)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(selected ? AnyPrimitiveButtonStyle(.glassProminent) : AnyPrimitiveButtonStyle(.glass))
+                        .controlSize(.small)
                     }
-                ))
-
-                HStack {
-                    Text("Interval")
-                    Slider(
-                        value: Binding(
-                            get: { Double(rule.intervalSeconds) },
-                            set: { rule.intervalSeconds = Int($0); try? Store.shared.context.save() }
-                        ),
-                        in: 5...(60 * 60 * 12),
-                        step: 5
-                    )
-                    Text(formatInterval(rule.intervalSeconds))
-                        .monospacedDigit()
-                        .frame(width: 110, alignment: .trailing)
+                    Button {
+                        showingCustomInterval = true
+                    } label: {
+                        Text("Custom")
+                            .font(.caption)
+                    }
+                    .buttonStyle(showingCustomInterval || !isPreset ? AnyPrimitiveButtonStyle(.glassProminent) : AnyPrimitiveButtonStyle(.glass))
+                    .controlSize(.small)
                 }
 
-                Picker("Day/night", selection: Binding(
-                    get: { rule.dayNightMode },
-                    set: { rule.dayNightMode = $0; try? Store.shared.context.save() }
-                )) {
-                    Text("Off").tag(DayNightMode.off)
-                    Text("Separate pools").tag(DayNightMode.separatePools)
-                    Text("Separate intervals").tag(DayNightMode.separateIntervals)
-                }
-
-                if rule.dayNightMode == .separateIntervals {
+                if showingCustomInterval || !presetIntervals.contains(where: { $0.seconds == rule.intervalSeconds }) {
                     HStack {
-                        Text("Night interval")
-                        Slider(
-                            value: Binding(
-                                get: { Double(rule.nightIntervalSeconds) },
-                                set: { rule.nightIntervalSeconds = Int($0); try? Store.shared.context.save() }
-                            ),
-                            in: 5...(60 * 60 * 12),
-                            step: 5
-                        )
-                        Text(formatInterval(rule.nightIntervalSeconds))
-                            .monospacedDigit()
-                            .frame(width: 110, alignment: .trailing)
+                        TextField("Value", value: $customIntervalValue, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 80)
+                        Picker("", selection: $customIntervalUnit) {
+                            Text("seconds").tag(IntervalUnit.seconds)
+                            Text("minutes").tag(IntervalUnit.minutes)
+                            Text("hours").tag(IntervalUnit.hours)
+                        }
+                        .labelsHidden()
+                        .frame(width: 140)
+                        Button("Apply") {
+                            rule.intervalSeconds = max(5, customIntervalValue * customIntervalUnit.toSeconds)
+                            try? Store.shared.context.save()
+                        }
+                        Spacer()
+                    }
+                    .onAppear {
+                        let secs = rule.intervalSeconds
+                        if secs % 3600 == 0 {
+                            customIntervalValue = secs / 3600
+                            customIntervalUnit = .hours
+                        } else if secs % 60 == 0 {
+                            customIntervalValue = secs / 60
+                            customIntervalUnit = .minutes
+                        } else {
+                            customIntervalValue = secs
+                            customIntervalUnit = .seconds
+                        }
                     }
                 }
 
-                if rule.dayNightMode != .off {
-                    HStack {
-                        Stepper("Day starts at \(rule.dayStartHour):00", value: Binding(
-                            get: { rule.dayStartHour },
-                            set: { rule.dayStartHour = $0; try? Store.shared.context.save() }
-                        ), in: 0...23)
-                        Stepper("Night starts at \(rule.nightStartHour):00", value: Binding(
-                            get: { rule.nightStartHour },
-                            set: { rule.nightStartHour = $0; try? Store.shared.context.save() }
-                        ), in: 0...23)
-                    }
-                }
-            }
-
-            Section("Spaces") {
-                Picker("Behavior", selection: Binding(
-                    get: { rule.spaceMode },
-                    set: { rule.spaceMode = $0; try? Store.shared.context.save() }
-                )) {
-                    Text("Unified").tag(SpaceMode.unified)
-                    Text("Per-Space").tag(SpaceMode.perSpace)
-                    Text("Active only").tag(SpaceMode.activeOnly)
-                }
-                .pickerStyle(.radioGroup)
-                Text("Per-Space and Active-only only update the wallpaper when that Space becomes active (macOS API limitation).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Repeats") {
-                Toggle("Allow photos to repeat", isOn: Binding(
-                    get: { rule.allowRepeats },
-                    set: { rule.allowRepeats = $0; try? Store.shared.context.save() }
+                Toggle("Align to clock (e.g. every hour at :00)", isOn: Binding(
+                    get: { rule.alignToClock },
+                    set: { rule.alignToClock = $0; try? Store.shared.context.save() }
                 ))
-                if !rule.allowRepeats {
-                    Stepper("Cooldown: \(rule.repeatCooldownDays) days", value: Binding(
-                        get: { rule.repeatCooldownDays },
-                        set: { rule.repeatCooldownDays = $0; try? Store.shared.context.save() }
-                    ), in: 1...365)
-                }
             }
-
-            Section("Topics") {
-                HStack {
-                    TextField("Add a topic (e.g. brutalism)", text: $newTopic)
-                        .onSubmit { addTopic() }
-                    Button("Add") { addTopic() }
-                        .disabled(newTopic.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if filters.topics.isEmpty {
-                    Text("No topics — rotation will fall back to 'architecture'.")
+        } else {
+            Section("Specific times") {
+                if rule.specificMinutesOfDay.isEmpty {
+                    Text("No times set — add one below.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(filters.topics, id: \.self) { topic in
-                        HStack {
-                            Text(topic)
-                            Spacer()
-                            Button(role: .destructive) { removeTopic(topic) } label: {
-                                Image(systemName: "minus.circle")
-                            }
-                            .buttonStyle(.borderless)
+                }
+                let sortedTimes = rule.specificMinutesOfDay.sorted()
+            ForEach(0..<sortedTimes.count, id: \.self) { idx in
+                let minuteOfDay = sortedTimes[idx]
+                    HStack {
+                        Text(formatMinuteOfDay(minuteOfDay))
+                            .font(.callout.monospacedDigit())
+                        Spacer()
+                        Button(role: .destructive) {
+                            rule.specificMinutesOfDay.removeAll { $0 == minuteOfDay }
+                            try? Store.shared.context.save()
+                        } label: {
+                            Image(systemName: "minus.circle")
                         }
+                        .buttonStyle(.borderless)
                     }
                 }
-            }
 
-            Section("Filters") {
-                HStack {
-                    Text("Aspect ratio")
-                    Slider(value: Binding(
-                        get: { filters.minAspect },
-                        set: { filters.minAspect = min($0, filters.maxAspect); try? Store.shared.context.save() }
-                    ), in: 0.5...3.0, step: 0.1)
-                    Text(String(format: "%.1f", filters.minAspect))
-                        .monospacedDigit()
-                        .frame(width: 40, alignment: .trailing)
-                    Text("–")
-                    Slider(value: Binding(
-                        get: { filters.maxAspect },
-                        set: { filters.maxAspect = max($0, filters.minAspect); try? Store.shared.context.save() }
-                    ), in: 0.5...3.0, step: 0.1)
-                    Text(String(format: "%.1f", filters.maxAspect))
-                        .monospacedDigit()
-                        .frame(width: 40, alignment: .trailing)
-                }
-                TextField("Country contains", text: Binding(
-                    get: { filters.countryContains ?? "" },
-                    set: { filters.countryContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
-                ))
-                TextField("Camera contains", text: Binding(
-                    get: { filters.cameraContains ?? "" },
-                    set: { filters.cameraContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
-                ))
-                HStack {
-                    TextField("Add an excluded tag", text: $newExclusion)
-                        .onSubmit { addExclusion() }
-                    Button("Add") { addExclusion() }
-                        .disabled(newExclusion.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if !filters.excludedTags.isEmpty {
-                    ForEach(filters.excludedTags, id: \.self) { tag in
-                        HStack {
-                            Text(tag)
-                            Spacer()
-                            Button(role: .destructive) { removeExclusion(tag) } label: {
-                                Image(systemName: "minus.circle")
-                            }
-                            .buttonStyle(.borderless)
+                HStack(spacing: 8) {
+                    Stepper(value: $newTimeHour, in: 0...23) {
+                        Text(String(format: "%02d", newTimeHour)).monospacedDigit()
+                    }
+                    .fixedSize()
+                    Text(":")
+                    Stepper(value: $newTimeMinute, in: 0...59, step: 5) {
+                        Text(String(format: "%02d", newTimeMinute)).monospacedDigit()
+                    }
+                    .fixedSize()
+                    Button("Add") {
+                        let value = newTimeHour * 60 + newTimeMinute
+                        if !rule.specificMinutesOfDay.contains(value) {
+                            rule.specificMinutesOfDay.append(value)
+                            try? Store.shared.context.save()
                         }
                     }
-                }
-            }
-
-            Section("Status") {
-                LabeledContent("Running", value: engine.isRunning ? "Yes" : "No")
-                if let next = engine.nextFireAt {
-                    LabeledContent("Next rotation", value: next.formatted(date: .omitted, time: .standard))
-                }
-                if let err = engine.lastError {
-                    Label(err, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                }
-                Button("Rotate now") {
-                    Task { await engine.rotateNow() }
+                    .buttonStyle(.glass)
+                    Spacer()
                 }
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private var daysSection: some View {
+        Section("Days of week") {
+            HStack(spacing: 6) {
+                let days = Weekday.allCases
+                ForEach(0..<days.count, id: \.self) { index in
+                    let day = days[index]
+                    let on = rule.daysOfWeekMask & day.bit != 0
+                    Button {
+                        if on { rule.daysOfWeekMask &= ~day.bit }
+                        else { rule.daysOfWeekMask |= day.bit }
+                        if rule.daysOfWeekMask == 0 { rule.daysOfWeekMask = 0b1111111 }
+                        try? Store.shared.context.save()
+                    } label: {
+                        Text(day.shortLabel)
+                            .font(.caption.monospaced())
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(on ? AnyPrimitiveButtonStyle(.glassProminent) : AnyPrimitiveButtonStyle(.glass))
+                    .help(day.fullLabel)
+                }
+                Spacer()
+                Button("All") {
+                    rule.daysOfWeekMask = 0b1111111
+                    try? Store.shared.context.save()
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                Button("Weekdays") {
+                    rule.daysOfWeekMask = 0b0111110
+                    try? Store.shared.context.save()
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private var spacesSection: some View {
+        Section("Spaces") {
+            Picker("Behavior", selection: Binding(
+                get: { rule.spaceMode },
+                set: { rule.spaceMode = $0; try? Store.shared.context.save() }
+            )) {
+                Text("Unified").tag(SpaceMode.unified)
+                Text("Per-Space").tag(SpaceMode.perSpace)
+                Text("Active only").tag(SpaceMode.activeOnly)
+            }
+            .pickerStyle(.segmented)
+            Text("Per-Space and Active-only only update the wallpaper when that Space becomes active (macOS API limitation).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var repeatsSection: some View {
+        Section("Repeats") {
+            Toggle("Allow photos to repeat", isOn: Binding(
+                get: { rule.allowRepeats },
+                set: { rule.allowRepeats = $0; try? Store.shared.context.save() }
+            ))
+            if !rule.allowRepeats {
+                Stepper("Cooldown: \(rule.repeatCooldownDays) days", value: Binding(
+                    get: { rule.repeatCooldownDays },
+                    set: { rule.repeatCooldownDays = $0; try? Store.shared.context.save() }
+                ), in: 1...365)
+            }
+        }
+    }
+
+    private var topicsSection: some View {
+        Section("Topics") {
+            HStack {
+                TextField("Add a topic (e.g. brutalism)", text: $newTopic)
+                    .onSubmit { addTopic() }
+                Button("Add") { addTopic() }
+                    .buttonStyle(.glass)
+                    .disabled(newTopic.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if filters.topics.isEmpty {
+                Text("No topics — rotation will fall back to 'architecture'.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(filters.topics, id: \.self) { topic in
+                    HStack {
+                        Text(topic)
+                        Spacer()
+                        Button(role: .destructive) { removeTopic(topic) } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+    }
+
+    private var filtersSection: some View {
+        Section("Filters") {
+            HStack {
+                Text("Aspect")
+                    .frame(width: 70, alignment: .leading)
+                Text(String(format: "%.1f – %.1f", filters.minAspect, filters.maxAspect))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 90, alignment: .leading)
+                Slider(value: Binding(
+                    get: { filters.minAspect },
+                    set: { filters.minAspect = min($0, filters.maxAspect); try? Store.shared.context.save() }
+                ), in: 0.5...3.0, step: 0.1)
+                Slider(value: Binding(
+                    get: { filters.maxAspect },
+                    set: { filters.maxAspect = max($0, filters.minAspect); try? Store.shared.context.save() }
+                ), in: 0.5...3.0, step: 0.1)
+            }
+            TextField("Country contains", text: Binding(
+                get: { filters.countryContains ?? "" },
+                set: { filters.countryContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
+            ))
+            TextField("Camera contains", text: Binding(
+                get: { filters.cameraContains ?? "" },
+                set: { filters.cameraContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
+            ))
+            HStack {
+                TextField("Add an excluded tag", text: $newExclusion)
+                    .onSubmit { addExclusion() }
+                Button("Add") { addExclusion() }
+                    .buttonStyle(.glass)
+                    .disabled(newExclusion.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if !filters.excludedTags.isEmpty {
+                ForEach(filters.excludedTags, id: \.self) { tag in
+                    HStack {
+                        Text(tag)
+                        Spacer()
+                        Button(role: .destructive) { removeExclusion(tag) } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+    }
+
+    private var statusSection: some View {
+        Section("Status") {
+            LabeledContent("Running", value: engine.isRunning ? "Yes" : "No")
+            if let next = engine.nextFireAt {
+                LabeledContent("Next rotation", value: formatNextFire(next))
+            }
+            if let err = engine.lastError {
+                Label(err, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+            }
+            Button("Rotate now") {
+                Task { await engine.rotateNow() }
+            }
+            .buttonStyle(.glass)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func formatMinuteOfDay(_ minutes: Int) -> String {
+        String(format: "%02d:%02d", minutes / 60, minutes % 60)
+    }
+
+    private func formatNextFire(_ date: Date) -> String {
+        let seconds = date.timeIntervalSinceNow
+        let formatter = DateFormatter()
+        formatter.dateFormat = seconds > 86400 ? "EEE HH:mm" : "HH:mm:ss"
+        return formatter.string(from: date)
     }
 
     private func addTopic() {
@@ -224,18 +384,42 @@ struct RotationView: View {
         filters.excludedTags.removeAll { $0 == tag }
         try? Store.shared.context.save()
     }
+}
 
-    private func formatInterval(_ seconds: Int) -> String {
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m" }
-        let h = seconds / 3600
-        let m = (seconds % 3600) / 60
-        return m == 0 ? "\(h)h" : "\(h)h \(m)m"
+enum IntervalUnit {
+    case seconds, minutes, hours
+    var toSeconds: Int {
+        switch self {
+        case .seconds: 1
+        case .minutes: 60
+        case .hours: 3600
+        }
+    }
+}
+
+struct IntervalPreset: Hashable, Identifiable {
+    let label: String
+    let seconds: Int
+    var id: Int { seconds }
+}
+
+/// Type-erased primitive button style so conditional expressions stay well-typed.
+struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
+    private let _makeBody: (Configuration) -> AnyView
+
+    init<S: PrimitiveButtonStyle>(_ style: S) {
+        self._makeBody = { configuration in
+            AnyView(style.makeBody(configuration: configuration))
+        }
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        _makeBody(configuration)
     }
 }
 
 #Preview {
     RotationView()
         .modelContainer(Store.shared.container)
-        .frame(width: 900, height: 600)
+        .frame(width: 720, height: 600)
 }

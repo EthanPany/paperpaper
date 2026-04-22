@@ -66,9 +66,10 @@ final class RotationEngine {
                 stop()
                 return
             }
-            let interval = Scheduler.nextIntervalSeconds(for: rule)
-            nextFireAt = Date().addingTimeInterval(Double(interval))
-            try? await Task.sleep(for: .seconds(Double(interval)))
+            let fire = Scheduler.nextFire(for: rule)
+            nextFireAt = fire
+            let interval = max(5, fire.timeIntervalSince(.now))
+            try? await Task.sleep(for: .seconds(interval))
             if Task.isCancelled { return }
             await rotate()
         }

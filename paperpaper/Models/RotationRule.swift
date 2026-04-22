@@ -4,7 +4,11 @@ import SwiftData
 @Model
 final class RotationRule {
     var enabled: Bool = false
+    var scheduleModeRaw: String = ScheduleMode.interval.rawValue
     var intervalSeconds: Int = 3600
+    var alignToClock: Bool = true
+    var specificMinutesOfDay: [Int] = [8 * 60, 12 * 60, 18 * 60]
+    var daysOfWeekMask: Int = 0b1111111  // Sun..Sat — all days by default
     var nightIntervalSeconds: Int = 3600
     var dayNightModeRaw: String = DayNightMode.off.rawValue
     var dayStartHour: Int = 7
@@ -16,7 +20,11 @@ final class RotationRule {
 
     init(
         enabled: Bool = false,
+        scheduleMode: ScheduleMode = .interval,
         intervalSeconds: Int = 3600,
+        alignToClock: Bool = true,
+        specificMinutesOfDay: [Int] = [8 * 60, 12 * 60, 18 * 60],
+        daysOfWeekMask: Int = 0b1111111,
         nightIntervalSeconds: Int = 3600,
         dayNightMode: DayNightMode = .off,
         dayStartHour: Int = 7,
@@ -26,7 +34,11 @@ final class RotationRule {
         repeatCooldownDays: Int = 30
     ) {
         self.enabled = enabled
+        self.scheduleModeRaw = scheduleMode.rawValue
         self.intervalSeconds = intervalSeconds
+        self.alignToClock = alignToClock
+        self.specificMinutesOfDay = specificMinutesOfDay
+        self.daysOfWeekMask = daysOfWeekMask
         self.nightIntervalSeconds = nightIntervalSeconds
         self.dayNightModeRaw = dayNightMode.rawValue
         self.dayStartHour = dayStartHour
@@ -35,6 +47,11 @@ final class RotationRule {
         self.allowRepeats = allowRepeats
         self.repeatCooldownDays = repeatCooldownDays
         self.updatedAt = .now
+    }
+
+    var scheduleMode: ScheduleMode {
+        get { ScheduleMode(rawValue: scheduleModeRaw) ?? .interval }
+        set { scheduleModeRaw = newValue.rawValue }
     }
 
     var dayNightMode: DayNightMode {

@@ -104,11 +104,13 @@ private struct PhotoMetadataCard: View {
                 Text(title)
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.55), radius: 2, x: 0, y: 1)
                     .lineLimit(2)
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .shadow(color: .black.opacity(0.55), radius: 2, x: 0, y: 1)
                         .lineLimit(1)
                 }
             }
@@ -116,7 +118,8 @@ private struct PhotoMetadataCard: View {
             if let blurb = photo.enrichment?.oneSentence, !blurb.isEmpty {
                 Text(blurb)
                     .font(.callout)
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
                     .lineLimit(3)
                     .frame(maxWidth: 520, alignment: .leading)
             }
@@ -124,7 +127,8 @@ private struct PhotoMetadataCard: View {
             if let metaLine, !metaLine.isEmpty {
                 Text(metaLine)
                     .font(.caption.monospaced())
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
                     .lineLimit(1)
             }
 
@@ -137,12 +141,17 @@ private struct PhotoMetadataCard: View {
                 }
             }
             .font(.caption)
-            .foregroundStyle(.white.opacity(0.7))
+            .foregroundStyle(.white.opacity(0.85))
+            .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
         }
         .padding(18)
         .frame(maxWidth: 560, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 18)
+                .fill(.black.opacity(0.42))
+        }
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-        .shadow(color: .black.opacity(0.4), radius: 18, x: 0, y: 6)
+        .shadow(color: .black.opacity(0.45), radius: 18, x: 0, y: 6)
     }
 
     private var title: String {

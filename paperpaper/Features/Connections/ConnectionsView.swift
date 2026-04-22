@@ -88,8 +88,6 @@ struct ConnectionsView: View {
                     if !availableModels.isEmpty { Divider() }
                     Text("Custom…").tag(customSentinel)
                 }
-                .pickerStyle(.radioGroup)
-                .labelsHidden()
 
                 if isCustomModelSelected {
                     HStack {
@@ -98,6 +96,10 @@ struct ConnectionsView: View {
                         Button("Use") { ollamaModel = customModelText }
                             .disabled(customModelText.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
+                } else {
+                    LabeledContent("Using", value: ollamaModel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 

@@ -45,3 +45,8 @@ enum DayNightMode: String, Codable, CaseIterable, Sendable {
     case separatePools
     case separateIntervals
 }
+
+enum ScheduleMode: String, Codable, CaseIterable, Sendable {
+    case interval
+    case specificTimes
+}

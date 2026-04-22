@@ -7,6 +7,9 @@ import AppKit
 @main
 struct paperpaperApp: App {
     @Environment(\.openWindow) private var openWindow
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
 
     init() {
         #if DEBUG
