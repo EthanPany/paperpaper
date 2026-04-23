@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct WidgetPayload: Codable, Sendable {
     var unsplashID: String
@@ -20,12 +21,17 @@ struct WidgetPayload: Codable, Sendable {
     var updatedAtSeconds: Double
 
     static let appGroup = "group.ep.paperpaper"
+    private static let log = Logger(subsystem: "ep.paperpaper", category: "widget-sync")
 
     static func containerURL() -> URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+        let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+        if url == nil {
+            log.error("widget has NO access to App Group container — check widget entitlements")
+        }
+        return url
     }
 
-    static func payloadFileURL() -> URL? {
+    static func fileURL() -> URL? {
         containerURL()?.appending(path: "widget/payload.json")
     }
 
@@ -35,7 +41,23 @@ struct WidgetPayload: Codable, Sendable {
     }
 
     static func read() -> WidgetPayload? {
-        guard let url = payloadFileURL(), let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(WidgetPayload.self, from: data)
+        guard let url = fileURL() else {
+            log.error("widget read: no App Group URL")
+            return nil
+        }
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        log.info("widget read: file=\(url.path, privacy: .public) exists=\(exists, privacy: .public)")
+        guard exists, let data = try? Data(contentsOf: url) else {
+            log.error("widget read: file unreadable at \(url.path, privacy: .public)")
+            return nil
+        }
+        do {
+            let payload = try JSONDecoder().decode(WidgetPayload.self, from: data)
+            log.info("widget read: decoded id=\(payload.unsplashID, privacy: .public) image=\(payload.imageFileName, privacy: .public)")
+            return payload
+        } catch {
+            log.error("widget read: decode failed \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 }
