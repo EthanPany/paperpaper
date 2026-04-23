@@ -160,18 +160,26 @@ final class WallpaperApplier {
         #endif
     }
 
-    /// The widget extension runs in a separate sandbox and macOS blocks it from
-    /// reading files that carry `com.apple.quarantine` or `com.apple.provenance`
-    /// xattrs (those flags tag files as originating from a Debug / unsigned app
-    /// run from DerivedData). We strip them on every write into the App Group so
-    /// the widget's `Data(contentsOf:)` call succeeds.
+    /// macOS tags files written by Debug builds run from DerivedData with
+    /// `com.apple.quarantine` and `com.apple.provenance` xattrs. The widget
+    /// extension (different sandbox) then can't read those files. We strip both
+    /// on every App Group write and log the POSIX error if the call fails so
+    /// we can see what's actually happening.
     private func stripXattrsForWidget(_ url: URL) {
         let path = url.path
-        _ = path.withCString { cpath -> Int32 in
-            removexattr(cpath, "com.apple.quarantine", 0)
-        }
-        _ = path.withCString { cpath -> Int32 in
-            removexattr(cpath, "com.apple.provenance", 0)
+        for name in ["com.apple.quarantine", "com.apple.provenance"] {
+            let result = path.withCString { cpath in
+                name.withCString { cname in
+                    removexattr(cpath, cname, 0)
+                }
+            }
+            if result != 0 {
+                let err = errno
+                // ENOATTR = 93 means the attr just wasn't there → ignore quietly
+                if err != 93 {
+                    log.error("removexattr \(name, privacy: .public) on \(path, privacy: .public) failed errno=\(err, privacy: .public)")
+                }
+            }
         }
     }
 

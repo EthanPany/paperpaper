@@ -21,6 +21,7 @@ struct WidgetPayload: Codable, Sendable {
     var updatedAtSeconds: Double
 
     static let appGroup = "group.ep.paperpaper"
+    static let defaultsKey = "widget.payload"
     private static let log = Logger(subsystem: "ep.paperpaper", category: "widget-sync")
 
     static func containerURL() -> URL? {
@@ -31,54 +32,45 @@ struct WidgetPayload: Codable, Sendable {
         return url
     }
 
-    static func fileURL() -> URL? {
-        containerURL()?.appending(path: "widget/payload.json")
-    }
-
     func resolvedImageURL() -> URL? {
         guard !imageFileName.isEmpty, let container = WidgetPayload.containerURL() else { return nil }
         return container.appending(path: "widget/\(imageFileName)")
     }
 
+    /// Try App-Group UserDefaults first (no xattr blockers), then fall back to
+    /// the JSON file inside the App Group container. On every failure path we
+    /// log the actual Swift error so we can see the specific POSIX reason.
     static func read() -> WidgetPayload? {
-        // Leave a breadcrumb so the main app can prove the widget process is alive.
-        writeBreadcrumb(stage: "read-entered")
+        if let defaults = UserDefaults(suiteName: appGroup) {
+            if let data = defaults.data(forKey: defaultsKey) {
+                do {
+                    let payload = try JSONDecoder().decode(WidgetPayload.self, from: data)
+                    log.info("widget read: defaults hit id=\(payload.unsplashID, privacy: .public) image=\(payload.imageFileName, privacy: .public)")
+                    return payload
+                } catch {
+                    log.error("widget read: defaults decode failed \(error.localizedDescription, privacy: .public)")
+                }
+            } else {
+                log.info("widget read: defaults had no data for key \(defaultsKey, privacy: .public)")
+            }
+        } else {
+            log.error("widget read: UserDefaults(suiteName: \(appGroup, privacy: .public)) returned nil")
+        }
 
-        guard let url = fileURL() else {
-            log.error("widget read: no App Group URL")
-            writeBreadcrumb(stage: "no-container")
-            return nil
-        }
-        let exists = FileManager.default.fileExists(atPath: url.path)
-        log.info("widget read: file=\(url.path, privacy: .public) exists=\(exists, privacy: .public)")
-        guard exists, let data = try? Data(contentsOf: url) else {
-            log.error("widget read: file unreadable at \(url.path, privacy: .public)")
-            writeBreadcrumb(stage: "file-missing")
-            return nil
-        }
+        // Fallback: read the file
+        guard let container = containerURL() else { return nil }
+        let fileURL = container.appending(path: "widget/payload.json")
+        let exists = FileManager.default.fileExists(atPath: fileURL.path)
+        log.info("widget read: fallback file=\(fileURL.path, privacy: .public) exists=\(exists, privacy: .public)")
+        guard exists else { return nil }
         do {
+            let data = try Data(contentsOf: fileURL)
             let payload = try JSONDecoder().decode(WidgetPayload.self, from: data)
-            log.info("widget read: decoded id=\(payload.unsplashID, privacy: .public) image=\(payload.imageFileName, privacy: .public)")
-            writeBreadcrumb(stage: "ok:\(payload.unsplashID)")
+            log.info("widget read: file hit id=\(payload.unsplashID, privacy: .public)")
             return payload
         } catch {
-            log.error("widget read: decode failed \(error.localizedDescription, privacy: .public)")
-            writeBreadcrumb(stage: "decode-failed")
+            log.error("widget read: file error \(error.localizedDescription, privacy: .public) nsError=\((error as NSError).code, privacy: .public)")
             return nil
-        }
-    }
-
-    private static func writeBreadcrumb(stage: String) {
-        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else { return }
-        let dir = container.appending(path: "widget")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appending(path: "last_read.json")
-        let payload: [String: Any] = [
-            "readAt": Date.now.timeIntervalSince1970,
-            "stage": stage,
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: payload) {
-            try? data.write(to: url, options: .atomic)
         }
     }
 }
