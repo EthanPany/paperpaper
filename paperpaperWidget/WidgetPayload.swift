@@ -41,23 +41,44 @@ struct WidgetPayload: Codable, Sendable {
     }
 
     static func read() -> WidgetPayload? {
+        // Leave a breadcrumb so the main app can prove the widget process is alive.
+        writeBreadcrumb(stage: "read-entered")
+
         guard let url = fileURL() else {
             log.error("widget read: no App Group URL")
+            writeBreadcrumb(stage: "no-container")
             return nil
         }
         let exists = FileManager.default.fileExists(atPath: url.path)
         log.info("widget read: file=\(url.path, privacy: .public) exists=\(exists, privacy: .public)")
         guard exists, let data = try? Data(contentsOf: url) else {
             log.error("widget read: file unreadable at \(url.path, privacy: .public)")
+            writeBreadcrumb(stage: "file-missing")
             return nil
         }
         do {
             let payload = try JSONDecoder().decode(WidgetPayload.self, from: data)
             log.info("widget read: decoded id=\(payload.unsplashID, privacy: .public) image=\(payload.imageFileName, privacy: .public)")
+            writeBreadcrumb(stage: "ok:\(payload.unsplashID)")
             return payload
         } catch {
             log.error("widget read: decode failed \(error.localizedDescription, privacy: .public)")
+            writeBreadcrumb(stage: "decode-failed")
             return nil
+        }
+    }
+
+    private static func writeBreadcrumb(stage: String) {
+        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else { return }
+        let dir = container.appending(path: "widget")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "last_read.json")
+        let payload: [String: Any] = [
+            "readAt": Date.now.timeIntervalSince1970,
+            "stage": stage,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+            try? data.write(to: url, options: .atomic)
         }
     }
 }
