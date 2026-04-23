@@ -160,26 +160,29 @@ final class WallpaperApplier {
         #endif
     }
 
-    /// macOS tags files written by Debug builds run from DerivedData with
-    /// `com.apple.quarantine` and `com.apple.provenance` xattrs. The widget
-    /// extension (different sandbox) then can't read those files. We strip both
-    /// on every App Group write and log the POSIX error if the call fails so
-    /// we can see what's actually happening.
+    /// Strip `com.apple.quarantine` from a file so a differently-sandboxed
+    /// process (the widget extension) can read it.
+    ///
+    /// `removexattr()` fails with EPERM from inside the App Sandbox — we cannot
+    /// manually launder quarantine off our own files. But `URLResourceKey.
+    /// quarantinePropertiesKey` routes through LaunchServices and IS permitted
+    /// from sandbox when we own the file. Set it to nil to clear.
     private func stripXattrsForWidget(_ url: URL) {
-        let path = url.path
-        for name in ["com.apple.quarantine", "com.apple.provenance"] {
-            let result = path.withCString { cpath in
-                name.withCString { cname in
-                    removexattr(cpath, cname, 0)
+        var writable = url
+        do {
+            try (writable as NSURL).setResourceValue(NSNull(), forKey: .quarantinePropertiesKey)
+        } catch {
+            // Fallback via low-level xattr in case Launch Services isn't routing
+            // the removal — usually logs EPERM which is expected in sandbox.
+            let path = url.path
+            for name in ["com.apple.quarantine", "com.apple.provenance"] {
+                _ = path.withCString { cpath in
+                    name.withCString { cname in
+                        removexattr(cpath, cname, 0)
+                    }
                 }
             }
-            if result != 0 {
-                let err = errno
-                // ENOATTR = 93 means the attr just wasn't there → ignore quietly
-                if err != 93 {
-                    log.error("removexattr \(name, privacy: .public) on \(path, privacy: .public) failed errno=\(err, privacy: .public)")
-                }
-            }
+            log.error("quarantine clear via LS failed: \(error.localizedDescription, privacy: .public) on \(url.path, privacy: .public)")
         }
     }
 
