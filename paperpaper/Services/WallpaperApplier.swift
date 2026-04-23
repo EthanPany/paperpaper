@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import os
+import Darwin
 #if canImport(WidgetKit)
 import WidgetKit
 #endif
@@ -159,6 +160,21 @@ final class WallpaperApplier {
         #endif
     }
 
+    /// The widget extension runs in a separate sandbox and macOS blocks it from
+    /// reading files that carry `com.apple.quarantine` or `com.apple.provenance`
+    /// xattrs (those flags tag files as originating from a Debug / unsigned app
+    /// run from DerivedData). We strip them on every write into the App Group so
+    /// the widget's `Data(contentsOf:)` call succeeds.
+    private func stripXattrsForWidget(_ url: URL) {
+        let path = url.path
+        _ = path.withCString { cpath -> Int32 in
+            removexattr(cpath, "com.apple.quarantine", 0)
+        }
+        _ = path.withCString { cpath -> Int32 in
+            removexattr(cpath, "com.apple.provenance", 0)
+        }
+    }
+
     private func writeWidgetPayload(for photo: Photo, file: URL) {
         let imageFileName = copyImageToAppGroup(from: file, photoID: photo.unsplashID)
 
@@ -183,6 +199,7 @@ final class WallpaperApplier {
         )
         do {
             try payload.write()
+            stripXattrsForWidget(WidgetPayload.payloadFileURL())
             log.info("wrote widget payload for \(photo.unsplashID, privacy: .public) image=\(imageFileName, privacy: .public)")
         } catch {
             log.error("payload.write failed: \(error.localizedDescription, privacy: .public)")
@@ -208,6 +225,7 @@ final class WallpaperApplier {
         _ = try? fm.removeItem(at: destination)
         do {
             try fm.copyItem(at: sourceFile, to: destination)
+            stripXattrsForWidget(destination)
             return name
         } catch {
             log.error("copy to app group failed: \(error.localizedDescription, privacy: .public) dest=\(destination.path, privacy: .public)")
