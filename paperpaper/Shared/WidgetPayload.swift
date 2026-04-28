@@ -18,6 +18,15 @@ struct WidgetPayload: Codable, Sendable {
     var longitude: Double?
     var takenAtSeconds: Double?
     var updatedAtSeconds: Double
+    // Raw Unsplash fields — always populated so the widget has *something*
+    // useful to render before async enrichment completes (or when it fails).
+    var photoDescription: String?
+    var altDescription: String?
+    var locationName: String?
+    var locationCity: String?
+    var locationCountry: String?
+    var tags: [String]?
+    var hexColor: String?
 
     static let appGroup = "group.ep.paperpaper"
     static let defaultsKey = "widget.payload"

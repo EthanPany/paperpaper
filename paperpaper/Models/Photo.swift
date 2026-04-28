@@ -88,6 +88,45 @@ final class Photo {
         return Double(width) / Double(height)
     }
 
+    var locationComponents: [String] {
+        guard let raw = locationName?.nilIfEmpty else { return [] }
+        return raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    var bestPlaceTitle: String {
+        if let name = enrichment?.buildingName?.nilIfEmpty { return name }
+        if let first = locationComponents.first { return first }
+        if let city = locationCity?.nilIfEmpty { return city }
+        if let area = areaText.nilIfEmpty { return area }
+        if let country = locationCountry?.nilIfEmpty { return country }
+        if let desc = photoDescription?.nilIfEmpty { return desc }
+        if let alt = altDescription?.nilIfEmpty { return alt }
+        return "Untitled"
+    }
+
+    var bestPlaceSubtitle: String {
+        let architect = enrichment?.architect?.nilIfEmpty
+        let fallbackLocation = [locationCity, locationCountry]
+            .compactMap { $0?.nilIfEmpty }
+            .joined(separator: ", ")
+            .nilIfEmpty
+        let locationLine: String? = {
+            if locationComponents.count > 1 {
+                return locationComponents.dropFirst().joined(separator: ", ").nilIfEmpty
+            }
+            if let area = areaText.nilIfEmpty, area != bestPlaceTitle { return area }
+            if let fallbackLocation, fallbackLocation != bestPlaceTitle { return fallbackLocation }
+            if let country = locationCountry?.nilIfEmpty, country != bestPlaceTitle { return country }
+            return nil
+        }()
+        return [architect, locationLine]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
     var areaText: String {
         [locationCity, locationCountry].compactMap { $0 }.joined(separator: ", ").nilIfEmpty ?? locationName ?? ""
     }

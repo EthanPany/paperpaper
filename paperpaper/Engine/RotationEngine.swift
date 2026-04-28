@@ -13,6 +13,21 @@ final class RotationEngine {
 
     private var loopTask: Task<Void, Never>?
 
+    /// Persisted across launches so re-opening the app does NOT trigger an
+    /// immediate rotation if the schedule isn't due. Only consulted by the
+    /// loop; not part of @Observable state.
+    private static let lastRotationKey = "rotation.lastRotationAt"
+
+    private var lastRotationAt: Date? {
+        get {
+            let raw = UserDefaults.standard.double(forKey: Self.lastRotationKey)
+            return raw > 0 ? Date(timeIntervalSince1970: raw) : nil
+        }
+        set {
+            UserDefaults.standard.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Self.lastRotationKey)
+        }
+    }
+
     func startIfEnabled() {
         let rule = Store.shared.rule()
         if rule.enabled { start() } else { stop() }
@@ -44,6 +59,7 @@ final class RotationEngine {
 
     func rotateNow() async {
         await rotate()
+        lastRotationAt = .now
     }
 
     private func handleSpaceChange() async {
@@ -56,9 +72,13 @@ final class RotationEngine {
     }
 
     private func loop() async {
-        try? await Task.sleep(for: .seconds(1))
-        if Task.isCancelled { return }
-        await rotate()
+        // First-run anchor: if we've never rotated, mark "now" as the
+        // baseline so the first rotation happens one full interval from
+        // launch — not immediately. Without this, the very first launch
+        // would rotate within seconds.
+        if lastRotationAt == nil {
+            lastRotationAt = .now
+        }
 
         while !Task.isCancelled {
             let rule = Store.shared.rule()
@@ -66,25 +86,67 @@ final class RotationEngine {
                 stop()
                 return
             }
-            let fire = Scheduler.nextFire(for: rule)
+            // Schedule from the last actual rotation, not from "now". This
+            // is what stops re-launching the app from triggering a fresh
+            // rotation: if we rotated 20 minutes ago on a 1h schedule, we
+            // sleep for the remaining 40 minutes instead of firing again.
+            // If the device was offline through several scheduled fires,
+            // `interval` will be ≤ 0 and we rotate immediately to catch up.
+            let baseline = lastRotationAt ?? .now
+            let fire = Scheduler.nextFire(for: rule, after: baseline)
             nextFireAt = fire
-            let interval = max(5, fire.timeIntervalSince(.now))
-            try? await Task.sleep(for: .seconds(interval))
-            if Task.isCancelled { return }
+            let interval = fire.timeIntervalSince(.now)
+            if interval > 0 {
+                try? await Task.sleep(for: .seconds(interval))
+                if Task.isCancelled { return }
+            }
             await rotate()
+            lastRotationAt = .now
         }
     }
 
     private func rotate() async {
         do {
+            let rule = Store.shared.rule()
             let filters = Store.shared.filters()
-            let topic = filters.topics.randomElement() ?? "architecture"
+            let baseTopic = filters.topics.randomElement() ?? "architecture"
             let prefetchCount = UserDefaults.standard.object(forKey: "cache.prefetchCount") as? Int ?? 3
-            let photos = try await UnsplashService.shared.random(query: topic, count: 1 + prefetchCount)
-            let eligible = photos.filter { candidate in
-                acceptCandidate(candidate, filters: filters)
+            let recentIDs = rule.allowRepeats ? [] : recentlyShownIDs(cooldownDays: rule.repeatCooldownDays)
+
+            // Build the query ladder: when "prefer nearby" is on, try the
+            // user's city/country first, then fall back to the bare topic
+            // so we still rotate when the user is in a place Unsplash has
+            // few or no photos for.
+            let queries = await buildQueryLadder(baseTopic: baseTopic, rule: rule)
+
+            // For each query, try up to 3 batches before giving up — Unsplash
+            // random returns a small page; if all are recent repeats, retry.
+            var pool: [UnsplashPhoto] = []
+            var eligible: [UnsplashPhoto] = []
+            outer: for query in queries {
+                for _ in 0..<3 {
+                    let batch = try await UnsplashService.shared.random(query: query, count: 1 + prefetchCount)
+                    pool.append(contentsOf: batch)
+                    eligible = pool.filter { candidate in
+                        acceptCandidate(candidate, filters: filters) && !recentIDs.contains(candidate.id)
+                    }
+                    if !eligible.isEmpty { break outer }
+                }
             }
-            guard let first = eligible.first ?? photos.first else { return }
+
+            // Last-resort: if dedup blocked everything, fall back to the
+            // *least-recently-shown* photo in the pool. This keeps rotation
+            // moving instead of erroring out when the user's cooldown is
+            // larger than Unsplash's random variety for that topic.
+            let chosen: UnsplashPhoto?
+            if let first = eligible.first {
+                chosen = first
+            } else if !pool.isEmpty {
+                chosen = pickLeastRecent(in: pool, filters: filters)
+            } else {
+                chosen = nil
+            }
+            guard let first = chosen else { return }
 
             let applied = try await WallpaperApplier.shared.apply(unsplash: first)
             lastError = nil
@@ -99,6 +161,47 @@ final class RotationEngine {
             }
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Build the search-query ladder for one rotation. When `preferNearby`
+    /// is on AND we can resolve a region, we try `"<topic> <region>"` first,
+    /// then fall back to the bare topic so we don't get stuck if the user
+    /// is somewhere Unsplash has no architecture photos for.
+    private func buildQueryLadder(baseTopic: String, rule: RotationRule) async -> [String] {
+        let trimmed = baseTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+        let topic = trimmed.isEmpty ? "architecture" : trimmed
+        guard rule.preferNearby,
+              let hint = await LocationService.shared.currentRegion()?.queryHint
+        else {
+            return [topic]
+        }
+        return ["\(topic) \(hint)", topic]
+    }
+
+    /// Set of unsplash IDs shown within the cooldown window. Photos with
+    /// `lastSeenAt == nil` are never blocked; that's how a fresh photo
+    /// surfaces for the first time.
+    private func recentlyShownIDs(cooldownDays: Int) -> Set<String> {
+        guard cooldownDays > 0 else { return [] }
+        let cutoff = Date.now.addingTimeInterval(-Double(cooldownDays) * 86400)
+        let descriptor = FetchDescriptor<Photo>(predicate: #Predicate { $0.lastSeenAt != nil })
+        guard let photos = try? Store.shared.context.fetch(descriptor) else { return [] }
+        return Set(photos.compactMap { p -> String? in
+            guard let seen = p.lastSeenAt, seen >= cutoff else { return nil }
+            return p.unsplashID
+        })
+    }
+
+    /// Pick the candidate whose stored `lastSeenAt` is oldest (or never seen).
+    /// Used only when the dedup gate has blocked every fresh result.
+    private func pickLeastRecent(in pool: [UnsplashPhoto], filters: FilterPrefs) -> UnsplashPhoto? {
+        let acceptable = pool.filter { acceptCandidate($0, filters: filters) }
+        let candidates = acceptable.isEmpty ? pool : acceptable
+        return candidates.min { a, b in
+            let lastA = Store.shared.photo(withUnsplashID: a.id)?.lastSeenAt ?? .distantPast
+            let lastB = Store.shared.photo(withUnsplashID: b.id)?.lastSeenAt ?? .distantPast
+            return lastA < lastB
         }
     }
 

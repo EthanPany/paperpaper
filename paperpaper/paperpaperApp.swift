@@ -1,47 +1,63 @@
 import SwiftUI
 import SwiftData
+import os
 #if os(macOS)
 import AppKit
 #endif
 
 @main
 struct paperpaperApp: App {
+    private static let log = Logger(subsystem: "ep.paperpaper", category: "app-lifecycle")
+
     @Environment(\.openWindow) private var openWindow
     #if os(macOS)
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #endif
 
     init() {
+        Self.log.notice("paperpaperApp.init started")
         #if DEBUG
+        Self.log.notice("paperpaperApp.init seeding debug data")
         Store.shared.seedFakeData()
         #endif
-        #if os(macOS)
-        if UserDefaults.standard.bool(forKey: "app.hideDockIcon") {
-            NSApp.setActivationPolicy(.accessory)
+        // One-time cleanup: an earlier build wrote bad "external-…" payloads
+        // when the desktop wallpaper came from a sandbox-protected source we
+        // couldn't read (e.g. the Unsplash Wallpapers app's container). The
+        // payload landed in the App Group with empty imageFileName and stuck
+        // around forever. Clear those out at startup so the next rotation
+        // starts from a clean slate instead of rendering the bad payload.
+        if let existing = WidgetPayload.read(),
+           existing.unsplashID.hasPrefix("external-"),
+           existing.imageFileName.isEmpty {
+            Self.log.notice("paperpaperApp.init clearing stale external widget payload")
+            if let defaults = UserDefaults(suiteName: WidgetPayload.appGroup) {
+                defaults.removeObject(forKey: WidgetPayload.defaultsKey)
+            }
+            try? FileManager.default.removeItem(at: WidgetPayload.payloadFileURL())
         }
-        #endif
-        // Bring the widget up to date with whatever wallpaper was last applied,
-        // so users see the current photo immediately after launch.
-        WallpaperApplier.shared.syncWidgetFromCurrent()
+
+        // Keep the widget in sync with the actual macOS desktop image —
+        // catches our own rotations, manual System Settings changes, and
+        // late-arriving enrichment text.
+        Self.log.notice("paperpaperApp.init starting wallpaper watcher")
+        WallpaperWatcher.shared.start()
+        Self.log.notice("paperpaperApp.init starting rotation engine")
         RotationEngine.shared.startIfEnabled()
+        Self.log.notice("paperpaperApp.init completed")
     }
 
     var body: some Scene {
         #if os(macOS)
-        MenuBarExtra {
-            MenuBarContent {
-                openWindow(id: WindowID.main)
-            }
-        } label: {
-            Image(systemName: "photo.on.rectangle.angled")
-        }
-        .menuBarExtraStyle(.window)
-
         Window("paperpaper", id: WindowID.main) {
             MainWindowRouter()
                 .modelContainer(Store.shared.container)
                 .toolbar(removing: .title)
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                .onAppear {
+                    OpenMainWindowBridge.openMainWindow = {
+                        openWindow(id: WindowID.main)
+                    }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)

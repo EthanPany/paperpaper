@@ -7,7 +7,6 @@ struct AdvancedView: View {
     @AppStorage("log.level") private var logLevelRaw: String = LogLevel.info.rawValue
     @AppStorage("network.timeoutSeconds") private var networkTimeout: Double = 20
     @AppStorage("network.retryCount") private var retryCount: Double = 3
-    @AppStorage("app.hideDockIcon") private var hideDockIcon: Bool = false
 
     @State private var resetConfirmation: Bool = false
 
@@ -58,12 +57,10 @@ struct AdvancedView: View {
             }
 
             Section("App") {
-                Toggle("Menu-bar only (hide Dock icon)", isOn: $hideDockIcon)
-                    .onChange(of: hideDockIcon) { _, newValue in
-                        #if os(macOS)
-                        NSApp.setActivationPolicy(newValue ? .accessory : .regular)
-                        #endif
-                    }
+                LabeledContent("Dock icon") {
+                    Text("Shown only while the main window is open")
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Danger zone") {

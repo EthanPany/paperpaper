@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import CoreLocation
 
 struct RotationView: View {
     @Query private var rules: [RotationRule]
@@ -15,6 +16,7 @@ struct RotationView: View {
 
     private var rule: RotationRule { rules.first ?? Store.shared.rule() }
     private var filters: FilterPrefs { filterRows.first ?? Store.shared.filters() }
+    @State private var locationStatus: CLAuthorizationStatus = LocationService.shared.authorizationStatus
 
     private let presetIntervals: [IntervalPreset] = [
         IntervalPreset(label: "15 min", seconds: 15 * 60),
@@ -33,6 +35,7 @@ struct RotationView: View {
             daysSection
             spacesSection
             repeatsSection
+            nearbySection
             topicsSection
             filtersSection
             statusSection
@@ -249,6 +252,40 @@ struct RotationView: View {
         }
     }
 
+    private var nearbySection: some View {
+        Section("Nearby") {
+            Toggle("Prefer photos near my location", isOn: Binding(
+                get: { rule.preferNearby },
+                set: { newValue in
+                    rule.preferNearby = newValue
+                    try? Store.shared.context.save()
+                    if newValue {
+                        Task {
+                            locationStatus = await LocationService.shared.requestAuthorization()
+                        }
+                    }
+                }
+            ))
+
+            if rule.preferNearby {
+                switch locationStatus {
+                case .denied, .restricted:
+                    Label("Location access denied. Open System Settings → Privacy & Security → Location Services to enable paperpaper.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                case .notDetermined:
+                    Text("Click the toggle again to grant location access.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                default:
+                    Text("Each rotation tries photos tagged near you first, then falls back to your topics if nothing matches.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private var topicsSection: some View {
         Section("Topics") {
             HStack {
@@ -279,43 +316,59 @@ struct RotationView: View {
 
     private var filtersSection: some View {
         Section("Filters") {
-            HStack {
-                Text("Aspect")
-                Spacer()
-                Stepper(value: Binding(
-                    get: { filters.minAspect },
-                    set: { filters.minAspect = min($0, filters.maxAspect); try? Store.shared.context.save() }
-                ), in: 0.5...3.0, step: 0.1) {
-                    Text(String(format: "min %.1f", filters.minAspect))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+            LabeledContent("Aspect ratio") {
+                HStack(spacing: 12) {
+                    Stepper(value: Binding(
+                        get: { filters.minAspect },
+                        set: { filters.minAspect = min($0, filters.maxAspect); try? Store.shared.context.save() }
+                    ), in: 0.5...3.0, step: 0.1) {
+                        Text(String(format: "min %.1f", filters.minAspect))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Stepper(value: Binding(
+                        get: { filters.maxAspect },
+                        set: { filters.maxAspect = max($0, filters.minAspect); try? Store.shared.context.save() }
+                    ), in: 0.5...3.0, step: 0.1) {
+                        Text(String(format: "max %.1f", filters.maxAspect))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .fixedSize()
-                Stepper(value: Binding(
-                    get: { filters.maxAspect },
-                    set: { filters.maxAspect = max($0, filters.minAspect); try? Store.shared.context.save() }
-                ), in: 0.5...3.0, step: 0.1) {
-                    Text(String(format: "max %.1f", filters.maxAspect))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+            }
+
+            LabeledContent("Country contains") {
+                TextField("any", text: Binding(
+                    get: { filters.countryContains ?? "" },
+                    set: { filters.countryContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
+                ))
+                .multilineTextAlignment(.trailing)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+            }
+
+            LabeledContent("Camera contains") {
+                TextField("any", text: Binding(
+                    get: { filters.cameraContains ?? "" },
+                    set: { filters.cameraContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
+                ))
+                .multilineTextAlignment(.trailing)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+            }
+
+            LabeledContent("Excluded tags") {
+                HStack(spacing: 8) {
+                    TextField("e.g. portrait", text: $newExclusion)
+                        .onSubmit { addExclusion() }
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 160)
+                    Button("Add") { addExclusion() }
+                        .buttonStyle(.glass)
+                        .disabled(newExclusion.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .fixedSize()
             }
-            TextField("Country contains", text: Binding(
-                get: { filters.countryContains ?? "" },
-                set: { filters.countryContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
-            ))
-            TextField("Camera contains", text: Binding(
-                get: { filters.cameraContains ?? "" },
-                set: { filters.cameraContains = $0.isEmpty ? nil : $0; try? Store.shared.context.save() }
-            ))
-            HStack {
-                TextField("Add an excluded tag", text: $newExclusion)
-                    .onSubmit { addExclusion() }
-                Button("Add") { addExclusion() }
-                    .buttonStyle(.glass)
-                    .disabled(newExclusion.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+
             if !filters.excludedTags.isEmpty {
                 ForEach(filters.excludedTags, id: \.self) { tag in
                     HStack {

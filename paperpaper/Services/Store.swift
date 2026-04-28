@@ -83,6 +83,11 @@ final class Store {
     func toggleFavorite(_ photo: Photo) {
         photo.favoritedAt = photo.favoritedAt == nil ? .now : nil
         try? context.save()
+        // Favorite is part of widget content (the widget can render the
+        // heart icon on the active photo), so force a reload — without it
+        // the widget keeps showing the pre-toggle state until the next
+        // rotation. No-op when the toggled photo isn't the current one.
+        WallpaperApplier.shared.syncWidgetFromCurrent(forceReload: true)
     }
 
     func hide(_ photo: Photo) {
