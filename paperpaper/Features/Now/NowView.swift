@@ -13,6 +13,7 @@ struct NowView: View {
     // (un-enriched) `photo.enrichment?.buildingName`.
     @Query private var enrichmentSubscription: [Enrichment]
     @State private var engine = RotationEngine.shared
+    @State private var applier = WallpaperApplier.shared
     /// Luminance (0..1) of the wallpaper region directly behind the metadata
     /// card. Computed off-main from the cached local image whenever `current`
     /// changes. Drives the card's light/dark glass + text colors.
@@ -68,10 +69,14 @@ struct NowView: View {
                 Button {
                     Task { await WallpaperApplier.shared.regenerateMostRecent() }
                 } label: {
-                    Image(systemName: "sparkles")
+                    if applier.isEnriching {
+                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                    } else {
+                        Image(systemName: "sparkles")
+                    }
                 }
-                .help("Regenerate AI info — re-run the architecture agent on the current photo")
-                .disabled(current == nil)
+                .help(applier.isEnriching ? "Regenerating AI info…" : "Regenerate AI info — re-run the architecture agent on the current photo")
+                .disabled(current == nil || applier.isEnriching)
 
                 if let photo = current {
                     Button {

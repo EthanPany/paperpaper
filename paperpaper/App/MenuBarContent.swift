@@ -4,6 +4,7 @@ import SwiftData
 struct MenuBarContent: View {
     let openMainWindow: () -> Void
     @State private var engine = RotationEngine.shared
+    @State private var applier = WallpaperApplier.shared
     @State private var ollamaReachable: Bool? = nil
 
     var body: some View {
@@ -65,10 +66,20 @@ struct MenuBarContent: View {
             .buttonStyle(.borderless)
             .help("Re-set the macOS wallpaper from the most recent applied photo without rotating to a new one.")
 
-            Button("Regenerate AI info", systemImage: "sparkles") {
+            Button {
                 Task { await WallpaperApplier.shared.regenerateMostRecent() }
+            } label: {
+                HStack(spacing: 6) {
+                    if applier.isEnriching {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                    } else {
+                        Image(systemName: "sparkles")
+                    }
+                    Text(applier.isEnriching ? "Regenerating AI info…" : "Regenerate AI info")
+                }
             }
             .buttonStyle(.borderless)
+            .disabled(applier.isEnriching)
             .help("Re-run the architecture agent on the current photo. Forces a fresh Ollama call even if the photo was already enriched.")
 
             Button("Refresh widget", systemImage: "arrow.clockwise") {

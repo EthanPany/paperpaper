@@ -10,9 +10,16 @@ import AppKit
 #endif
 
 @MainActor
+@Observable
 final class WallpaperApplier {
     static let shared = WallpaperApplier()
 
+    /// True while the architecture agent is actively talking to Ollama.
+    /// Bound to spinners in NowView and MenuBarContent so the user sees
+    /// the click registered (Ollama enrichment can take 5–30s).
+    var isEnriching: Bool = false
+
+    @ObservationIgnored
     private let log = Logger(subsystem: "ep.paperpaper", category: "widget-sync")
 
     /// Set while apply()/reapply() is mid-flight. WallpaperWatcher reads this
@@ -299,6 +306,8 @@ final class WallpaperApplier {
     /// the next pass actually re-asks Ollama (enrichIfNeeded is otherwise a
     /// no-op on already-enriched photos).
     func regenerateEnrichment(for photo: Photo) async {
+        isEnriching = true
+        defer { isEnriching = false }
         if let existing = photo.enrichment {
             existing.enrichedAt = nil
             existing.buildingName = nil

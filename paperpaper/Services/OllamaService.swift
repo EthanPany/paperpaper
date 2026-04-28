@@ -34,7 +34,14 @@ enum OllamaError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingURL: return "Set your Ollama Host URL in Connections."
-        case .http(let status, _): return "Ollama returned HTTP \(status)."
+        case .http(let status, let body):
+            // Surface the body so 400/422 errors don't read as "magic Ollama
+            // rejection" — most are "model does not support tools" or
+            // "model not found", which the body explains directly.
+            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { return "Ollama returned HTTP \(status)." }
+            let snippet = trimmed.count > 240 ? String(trimmed.prefix(240)) + "…" : trimmed
+            return "Ollama returned HTTP \(status): \(snippet)"
         case .decoding(let error): return "Could not parse Ollama response: \(error.localizedDescription)"
         case .transport(let error): return "Could not reach Ollama: \(error.localizedDescription)"
         case .emptyResponse: return "Ollama returned an empty response."
