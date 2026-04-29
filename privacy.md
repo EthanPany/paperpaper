@@ -1,3 +1,8 @@
+---
+permalink: /privacy/
+title: paperpaper — Privacy Policy
+---
+
 # paperpaper — Privacy Policy
 
 _Last updated: 2026-04-29_
