@@ -129,8 +129,18 @@ enum ArchitectureAgent {
                         let result = await runWebSearch(call.function.arguments)
                         messages.append(toolResultMessage(name: name, json: result))
                     } else {
+                        // Small models routinely fabricate tool names ("The
+                        // Landmark Tavern") instead of calling commit_enrichment.
+                        // If the args themselves contain commit-like fields,
+                        // treat the call as if the model meant commit_enrichment.
+                        // This pattern (tool name = building name) was the
+                        // dominant failure mode on qwen3-vl:2b.
+                        if let confirmed = decodeCommit(call.function.arguments) {
+                            log.info("agent: rescued commit from unknown tool '\(name, privacy: .public)' — name=\(confirmed.name, privacy: .public)")
+                            return confirmed
+                        }
                         log.error("agent: unknown tool \(name, privacy: .public)")
-                        messages.append(toolResultMessage(name: name, json: "{\"error\":\"unknown tool\"}"))
+                        messages.append(toolResultMessage(name: name, json: "{\"error\":\"unknown tool — call commit_enrichment instead\"}"))
                     }
                 }
                 continue
@@ -149,6 +159,50 @@ enum ArchitectureAgent {
                 content: "Now call the `commit_enrichment` tool with your final answer. Remember: blurb_short (1 sentence), blurb_medium (2–3 sentences), and blurb_long (3–5 sentences) are ALL required. If you can't identify a specific building, set building_name=null and confidence=\"low\" — but still produce all three blurbs describing the place or scene. Do NOT invent architects or years; use null when uncertain.",
                 images: nil, tool_calls: nil, tool_name: nil
             ))
+        }
+
+        // Final commit-forcing pass. Drop tools entirely and ask for a JSON
+        // object in the content directly — this gets us past small models
+        // that are stuck in a tool-call loop without ever calling
+        // commit_enrichment. We strip the multimodal turns to reduce token
+        // cost and keep the system prompt + the original user prompt.
+        log.info("agent: loop ended without commit, attempting forced text-JSON commit")
+        let forcedPrompt = """
+        STOP using tools. You have failed to commit \(maxIterations) times in a row.
+
+        Reply with ONLY a single JSON object — no prose, no markdown fences, no
+        tool calls. The object MUST contain these keys exactly:
+
+        {
+          "building_name": <string or null>,
+          "architect": <string or null>,
+          "year": <integer or null>,
+          "style": <string or null>,
+          "location": <string, REQUIRED, "Anchor, City, Country">,
+          "blurb_short": <string, REQUIRED, 1 sentence ≤ 18 words>,
+          "blurb_medium": <string, REQUIRED, 2–3 sentences ≤ 55 words>,
+          "blurb_long": <string, REQUIRED, 3–5 sentences ≤ 130 words>,
+          "confidence": <"high"|"medium"|"low">
+        }
+
+        If you don't know the building specifically, set building_name=null and
+        confidence="low" but STILL produce all three blurbs about the scene.
+        Use null for unknown architect / year — DO NOT guess.
+        """
+        messages.append(OllamaChatMessage(
+            role: "user",
+            content: forcedPrompt,
+            images: nil, tool_calls: nil, tool_name: nil
+        ))
+        do {
+            let final = try await OllamaService.shared.chat(messages: messages, tools: [], temperature: 0.1)
+            if let confirmed = decodeCommitFromText(final.content) {
+                log.info("agent: commit via forced text-JSON pass — name=\(confirmed.name, privacy: .public)")
+                return confirmed
+            }
+            log.info("agent: forced text-JSON pass yielded no parsable commit (content=\(final.content.prefix(120), privacy: .public))")
+        } catch {
+            log.error("agent: forced text-JSON commit failed: \(error.localizedDescription, privacy: .public)")
         }
 
         log.info("agent: loop ended without commit")
