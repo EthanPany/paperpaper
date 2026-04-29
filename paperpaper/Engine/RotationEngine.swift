@@ -138,16 +138,24 @@ final class RotationEngine {
 
             // For each query, try up to 3 batches before giving up — Unsplash
             // random returns a small page; if all are recent repeats, retry.
+            // 404 from /photos/random means "no photos match this query" (not
+            // a real error), so we fall through to the next query in the
+            // ladder instead of bubbling up.
             var pool: [UnsplashPhoto] = []
             var eligible: [UnsplashPhoto] = []
             outer: for query in queries {
                 for _ in 0..<3 {
-                    let batch = try await UnsplashService.shared.random(query: query, count: 1 + prefetchCount)
-                    pool.append(contentsOf: batch)
-                    eligible = pool.filter { candidate in
-                        acceptCandidate(candidate, filters: filters) && !recentIDs.contains(candidate.id)
+                    do {
+                        let batch = try await UnsplashService.shared.random(query: query, count: 1 + prefetchCount)
+                        pool.append(contentsOf: batch)
+                        eligible = pool.filter { candidate in
+                            acceptCandidate(candidate, filters: filters) && !recentIDs.contains(candidate.id)
+                        }
+                        if !eligible.isEmpty { break outer }
+                    } catch UnsplashError.http(let status, _) where status == 404 {
+                        // No matches for this query — try the next one.
+                        break
                     }
-                    if !eligible.isEmpty { break outer }
                 }
             }
 
@@ -163,7 +171,13 @@ final class RotationEngine {
             } else {
                 chosen = nil
             }
-            guard let first = chosen else { return }
+            guard let first = chosen else {
+                // Every query in the ladder returned empty / 404 / dedup-only.
+                // Surface that explicitly so the menu bar status is honest
+                // about why the rotation didn't happen.
+                lastError = "No matching photos on Unsplash for the current topics. Try broader topics in Settings → Schedule."
+                return
+            }
 
             let applied = try await WallpaperApplier.shared.apply(unsplash: first)
             lastError = nil

@@ -152,13 +152,15 @@ private struct WallpaperPreview: View {
     let payload: WidgetPayload?
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        // Image (or placeholder) is the single ZStack child so the container's
+        // 150pt frame is the truth. Text + gradient ride as overlays — they
+        // inherit the same constrained bounds and can't push the container
+        // taller, which was the cause of the second-line clipping bug.
+        ZStack {
             if let payload, let image = loadImage(payload) {
                 image
                     .resizable()
                     .scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
             } else {
                 LinearGradient(
                     colors: [
@@ -174,15 +176,23 @@ private struct WallpaperPreview: View {
                         .foregroundStyle(.white.opacity(0.6))
                 }
             }
-
-            // Bottom gradient + title text — only render when we have a real
-            // payload (otherwise there's nothing to label).
-            if let payload {
+        }
+        .frame(height: 150)
+        .frame(maxWidth: .infinity)
+        .clipped()
+        .overlay(alignment: .bottom) {
+            if payload != nil {
                 LinearGradient(
                     colors: [.black.opacity(0), .black.opacity(0.55)],
                     startPoint: .center,
                     endPoint: .bottom
                 )
+                .frame(height: 80)
+                .allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let payload {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(payload.bestTitle)
                         .font(.system(.callout, design: .serif).weight(.semibold))
@@ -198,10 +208,9 @@ private struct WallpaperPreview: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(height: 150)
-        .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
