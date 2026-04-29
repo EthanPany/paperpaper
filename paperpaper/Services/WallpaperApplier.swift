@@ -69,6 +69,10 @@ final class WallpaperApplier {
 
         writeWidgetPayload(for: photo, file: appliedFile)
 
+        // Broadcast to other iCloud devices when this Mac is the primary.
+        // Coordinator no-ops if sync is disabled or another Mac is primary.
+        iCloudSyncCoordinator.shared.publishPhotoApplied(unsplashID: photo.unsplashID)
+
         enforceCacheCap()
         return photo
     }
@@ -188,8 +192,37 @@ final class WallpaperApplier {
     }
     #endif
 
+    /// Warm both image cache AND enrichment for a candidate the user hasn't
+    /// rotated to yet. Called from RotationEngine's prefetch loop, so by the
+    /// time the user actually flips to one of these the heavy Ollama call has
+    /// already (most likely) finished — the widget then updates once with the
+    /// final blurbs instead of "basic info → blurbs land 30s later."
+    ///
+    /// preCache itself doesn't await the enrichment Task — that would serialise
+    /// the rotation engine's prefetch loop on Ollama. enrichIfNeeded is per-
+    /// photo deduped, so the eventual `apply()`-driven call for the same
+    /// photo joins the in-flight task instead of starting a parallel one.
     func preCache(_ unsplash: UnsplashPhoto) async {
-        _ = try? await ensureDownloaded(id: unsplash.id, url: unsplash.urls.full)
+        guard let rawFile = try? await ensureDownloaded(id: unsplash.id, url: unsplash.urls.full) else {
+            return
+        }
+        let photo = Store.shared.upsert(Photo(unsplash: unsplash))
+        // Pull EXIF in here too so the agent gets GPS / camera data when
+        // it runs in the background — matches what apply() does post-download.
+        if photo.exif == nil,
+           let data = try? Data(contentsOf: rawFile),
+           let extracted = ExifReader.read(from: data) {
+            let exif = ExifRecord(extracted: extracted)
+            exif.photo = photo
+            Store.shared.context.insert(exif)
+            try? Store.shared.context.save()
+        }
+        // Don't await — let the rotation engine's prefetch loop continue.
+        // enrichIfNeeded is idempotent + per-photo deduped so the later
+        // apply-side call will join this task or no-op if it finished.
+        if photo.enrichment?.enrichedAt == nil {
+            Task { [weak self] in await self?.enrichIfNeeded(photo) }
+        }
     }
 
     /// Dumps the current on-disk widget payload field-by-field to the unified
@@ -282,24 +315,40 @@ final class WallpaperApplier {
         }
     }
 
-    /// Single in-flight enrichment task. Without this, two rapid rotations
-    /// can spawn parallel Ollama generate calls — and Ollama loads a fresh
-    /// model context per concurrent request. We saw the daemon balloon to
-    /// 32GB+ when this was unbounded. Serialising means at most one model
-    /// load ever resides in RAM, regardless of rotation cadence.
-    private var enrichmentInFlight: Task<Void, Never>?
+    /// Per-photo enrichment task. Two roles:
+    ///   1. Dedup: if a photo is mid-enrichment (e.g. preCache kicked it off
+    ///      and the user then rotates to it) the second call awaits the same
+    ///      Task instead of starting a parallel Ollama run.
+    ///   2. Serialisation: each new task chains off `lastEnrichmentTask`, so
+    ///      Ollama only ever has one inference in flight — preventing the
+    ///      32GB+ daemon blow-up we saw when concurrent /api/chat calls each
+    ///      loaded a fresh model context.
+    private var enrichmentTasks: [String: Task<Void, Never>] = [:]
+    private var lastEnrichmentTask: Task<Void, Never>?
 
     func enrichIfNeeded(_ photo: Photo) async {
         if let existing = photo.enrichment, existing.enrichedAt != nil { return }
+        let id = photo.unsplashID
 
-        // Wait for any prior enrichment to finish before starting ours.
-        // Photos still get enriched in arrival order, but never concurrently.
-        await enrichmentInFlight?.value
+        // Already running for this photo (e.g. preCache started it, user just
+        // rotated to it) — join the existing task instead of duplicating work.
+        if let inflight = enrichmentTasks[id] {
+            log.info("enrichIfNeeded: joining in-flight enrichment for \(id, privacy: .public)")
+            await inflight.value
+            return
+        }
+
+        let prior = lastEnrichmentTask
         let task: Task<Void, Never> = Task { [weak self] in
+            await prior?.value
             await self?.runEnrichment(photo)
         }
-        enrichmentInFlight = task
+        enrichmentTasks[id] = task
+        lastEnrichmentTask = task
         await task.value
+        // Keep `lastEnrichmentTask` pointing at the latest launched task so
+        // newcomers serialise behind it; just clear our per-photo slot.
+        enrichmentTasks.removeValue(forKey: id)
     }
 
     /// User-initiated re-enrichment. Wipes the existing enrichment record so
@@ -315,6 +364,9 @@ final class WallpaperApplier {
             existing.year = nil
             existing.style = nil
             existing.oneSentence = nil
+            existing.blurbShort = nil
+            existing.blurbMedium = nil
+            existing.blurbLong = nil
             try? Store.shared.context.save()
         }
         await enrichIfNeeded(photo)
@@ -371,6 +423,9 @@ final class WallpaperApplier {
             enrichment.year = confirmed.year
             enrichment.style = confirmed.style
             enrichment.oneSentence = confirmed.oneSentence
+            enrichment.blurbShort = confirmed.oneSentence
+            enrichment.blurbMedium = confirmed.blurbMedium
+            enrichment.blurbLong = confirmed.blurbLong
             enrichment.confidence = isBuilding ? .building : .areaOnly
             enrichment.modelUsed = UserDefaults.standard.string(forKey: "ollama.model")
 
@@ -393,6 +448,9 @@ final class WallpaperApplier {
             enrichment.year = nil
             enrichment.style = nil
             enrichment.oneSentence = nil
+            enrichment.blurbShort = nil
+            enrichment.blurbMedium = nil
+            enrichment.blurbLong = nil
             enrichment.confidence = .areaOnly
         }
         enrichment.enrichedAt = .now
@@ -461,6 +519,9 @@ final class WallpaperApplier {
             year: photo.enrichment?.year,
             style: photo.enrichment?.style,
             oneSentence: photo.enrichment?.oneSentence,
+            blurbShort: photo.enrichment?.blurbShort ?? photo.enrichment?.oneSentence,
+            blurbMedium: photo.enrichment?.blurbMedium,
+            blurbLong: photo.enrichment?.blurbLong,
             area: photo.areaText,
             authorName: photo.authorName,
             authorProfileURLString: photo.authorProfileURLString,
@@ -505,6 +566,9 @@ final class WallpaperApplier {
             year: nil,
             style: nil,
             oneSentence: nil,
+            blurbShort: nil,
+            blurbMedium: nil,
+            blurbLong: nil,
             area: file.deletingPathExtension().lastPathComponent,
             authorName: "",
             authorProfileURLString: nil,
@@ -572,6 +636,9 @@ final class WallpaperApplier {
             && existing.year == candidate.year
             && existing.style == candidate.style
             && existing.oneSentence == candidate.oneSentence
+            && existing.blurbShort == candidate.blurbShort
+            && existing.blurbMedium == candidate.blurbMedium
+            && existing.blurbLong == candidate.blurbLong
             && existing.area == candidate.area
             && existing.authorName == candidate.authorName
             && existing.authorProfileURLString == candidate.authorProfileURLString

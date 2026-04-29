@@ -1,72 +1,77 @@
 import SwiftUI
-import SwiftData
 
-struct SyncPane: View {
-    @AppStorage("sync.enabled") private var syncEnabled: Bool = false
-    @AppStorage("sync.settings") private var syncSettings: Bool = true
-    @AppStorage("sync.history") private var syncHistory: Bool = true
-    @AppStorage("sync.enrichment") private var syncEnrichment: Bool = true
-    @AppStorage("sync.keys") private var syncKeys: Bool = false
-
-    @Query private var prefs: [SyncPrefs]
-    @State private var showAdvanced: Bool = false
-
-    private var record: SyncPrefs { prefs.first ?? Store.shared.syncPrefs() }
+/// iCloud sync settings.
+///
+/// Config-only model: schedule + currently-applied photo ID flow through
+/// NSUbiquitousKeyValueStore. Image bytes and enrichment text are NOT synced
+/// — each device runs its own local Ollama and re-downloads from Unsplash.
+/// Exactly one device is "primary" at any time; others mirror.
+struct SyncView: View {
+    @State private var coordinator = iCloudSyncCoordinator.shared
 
     var body: some View {
         Form {
             Section("iCloud sync") {
-                Toggle("Enable iCloud sync", isOn: $syncEnabled)
-                    .onChange(of: syncEnabled) { _, newValue in
-                        record.enabled = newValue
-                        try? Store.shared.context.save()
-                    }
-                Text(syncEnabled
-                     ? "Quit and relaunch paperpaper. The SwiftData store is reconfigured at launch."
-                     : "Off: all data stays on this Mac only.")
+                Toggle("Sync paperpaper across your iCloud devices",
+                       isOn: $coordinator.isEnabled)
+                Text("Schedules and the currently-applied photo are mirrored. Image bytes stay local — each Mac fetches its own copy from Unsplash and runs its own Ollama enrichment.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                LabeledContent("Last sync", value: record.lastSyncAt?.formatted() ?? "—")
             }
 
-            Section("What to sync") {
-                Toggle("Settings", isOn: $syncSettings).disabled(!syncEnabled)
-                Toggle("History and favorites", isOn: $syncHistory).disabled(!syncEnabled)
-                Toggle("Enrichment cache", isOn: $syncEnrichment).disabled(!syncEnabled)
-                Toggle("API keys (iCloud Keychain)", isOn: $syncKeys)
-                    .disabled(!syncEnabled)
-                    .onChange(of: syncKeys) { _, newValue in
-                        if let key = KeychainService.shared.get(.unsplashAccessKey) {
-                            KeychainService.shared.set(key, for: .unsplashAccessKey, syncable: newValue)
-                        }
-                        if let auth = KeychainService.shared.get(.ollamaAuthHeader) {
-                            KeychainService.shared.set(auth, for: .ollamaAuthHeader, syncable: newValue)
-                        }
-                    }
-            }
-
-            DisclosureGroup(isExpanded: $showAdvanced) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("• iCloud capability (CloudKit) must be enabled on the paperpaper target in Xcode.")
-                    Text("• Not synced: image bytes, current-wallpaper state, Space identifiers.")
-                    Text("• When off, SwiftData store is local-only (cloudKitDatabase: .none).")
+            Section("This Mac") {
+                LabeledContent("Device name", value: coordinator.deviceName)
+                LabeledContent("Status") {
+                    statusBadge
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            } label: {
-                Label("Advanced", systemImage: "ellipsis.circle")
+                if coordinator.isEnabled, !coordinator.isPrimaryHere {
+                    Button {
+                        coordinator.makeThisDevicePrimary()
+                    } label: {
+                        Label("Make this Mac primary", systemImage: "star")
+                    }
+                    .buttonStyle(.glassProminent)
+                }
+                if let last = coordinator.lastSyncAt {
+                    LabeledContent("Last sync", value: last.formatted(date: .abbreviated, time: .shortened))
+                }
+                if let err = coordinator.lastError {
+                    Label(err, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("How this works")
+                        .font(.callout.weight(.medium))
+                    Text("• The primary Mac drives the rotation schedule and chooses photos.\n• Other Macs detect changes via iCloud Key-Value Store and mirror them — they never overwrite the primary's choices.\n• When you make this Mac primary, the previous primary stops publishing on its next iCloud refresh.\n• If you sign out of iCloud or disable sync, each Mac becomes independent again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
     }
-}
 
-struct SyncView: View {
-    var body: some View { SyncPane() }
+    @ViewBuilder
+    private var statusBadge: some View {
+        if !coordinator.isEnabled {
+            Text("Off").foregroundStyle(.secondary)
+        } else if coordinator.isPrimaryHere {
+            Label("Primary", systemImage: "star.fill")
+                .foregroundStyle(.green)
+        } else if let name = coordinator.primaryDeviceName, !name.isEmpty {
+            Label("Mirroring \(name)", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+        } else {
+            Label("Looking for primary…", systemImage: "ellipsis")
+                .foregroundStyle(.secondary)
+        }
+    }
 }
 
 #Preview {
-    SyncPane()
-        .modelContainer(Store.shared.container)
-        .frame(width: 720, height: 600)
+    SyncView().frame(width: 720, height: 600)
 }

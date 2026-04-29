@@ -16,6 +16,17 @@ struct paperpaperApp: App {
 
     init() {
         Self.log.notice("paperpaperApp.init started")
+        // Register baseline defaults BEFORE anything else runs. `register(defaults:)`
+        // only fills slots the user hasn't explicitly set, so this is safe to
+        // run on every launch — it gives a fresh install sensible values
+        // (local Ollama + qwen3-vl:2b-instruct vision model) without
+        // overwriting whatever the user has chosen.
+        UserDefaults.standard.register(defaults: [
+            "ollama.url": "http://localhost:11434",
+            "ollama.model": "qwen3-vl:2b-instruct",
+            "ollama.temperature": 0.2,
+            "ollama.timeoutSeconds": 30.0,
+        ])
         #if DEBUG
         Self.log.notice("paperpaperApp.init seeding debug data")
         Store.shared.seedFakeData()
@@ -43,6 +54,8 @@ struct paperpaperApp: App {
         WallpaperWatcher.shared.start()
         Self.log.notice("paperpaperApp.init starting rotation engine")
         RotationEngine.shared.startIfEnabled()
+        Self.log.notice("paperpaperApp.init starting iCloud sync coordinator")
+        iCloudSyncCoordinator.shared.start()
         Self.log.notice("paperpaperApp.init completed")
     }
 

@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// Source — Unsplash credentials (the image input side).
 struct SourceView: View {
@@ -28,6 +31,10 @@ struct SourceView: View {
                 Text("Paste your Unsplash Access Key (not the Secret). Free developer keys work.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Link(destination: URL(string: "https://unsplash.com/oauth/applications")!) {
+                    Label("Get an Unsplash Access Key →", systemImage: "arrow.up.right.square")
+                        .font(.caption)
+                }
             }
 
             DisclosureGroup(isExpanded: $showAdvanced) {
@@ -67,10 +74,8 @@ struct IntelligenceView: View {
     @State private var ollamaAPIKey: String = ""
     @AppStorage("ollama.url") private var ollamaURL: String = "http://localhost:11434"
     @AppStorage("ollama.model") private var ollamaModel: String = "llama3.2"
-    @AppStorage("ollama.webSearch") private var ollamaWebSearch: Bool = false
     @AppStorage("ollama.temperature") private var ollamaTemperature: Double = 0.3
     @AppStorage("ollama.timeoutSeconds") private var ollamaTimeoutSeconds: Double = 30
-    @AppStorage("agent.enabled") private var agentEnabled: Bool = false
 
     @State private var availableModels: [String] = []
     @State private var modelsLoading: Bool = false
@@ -84,6 +89,19 @@ struct IntelligenceView: View {
 
     private var isCustomModelSelected: Bool {
         !availableModels.contains(ollamaModel) && !availableModels.isEmpty
+    }
+
+    /// Show the install-help block when Ollama is unreachable OR reachable
+    /// but with zero models pulled. Once the user has at least one model,
+    /// hide it — they're past the onboarding step.
+    private var needsInstallHelp: Bool {
+        modelsError != nil || availableModels.isEmpty
+    }
+
+    private var installHelpHeadline: String {
+        if modelsError != nil { return "Ollama isn't running." }
+        if availableModels.isEmpty { return "No models installed yet." }
+        return ""
     }
 
     var body: some View {
@@ -138,13 +156,51 @@ struct IntelligenceView: View {
                 }
             }
 
-            Section("Search Agent") {
-                Toggle("Enable LLM-powered search (in Discover)", isOn: $agentEnabled)
-                Text("When on, Discover shows a 'Smart Search' field that uses your Ollama model to progressively widen keywords, optionally verify with web search, and write a short description. Requires a local model via Ollama.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("Use web search tool (requires Ollama API key)", isOn: $ollamaWebSearch)
+            // Show install help when we couldn't reach Ollama OR the configured
+            // model isn't installed. Minimal: short paragraph + two
+            // copy-to-clipboard commands + the docs link. Hidden once the user
+            // has at least one model the app could pick from.
+            if needsInstallHelp {
+                Section("Get started") {
+                    Text(installHelpHeadline)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                    Text("paperpaper uses Ollama running locally for vision + place identification. Install it once, pull the default model, and you're done — everything stays on your machine.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HelpCommandRow(
+                        label: "1. Install Ollama",
+                        command: "brew install ollama && ollama serve"
+                    )
+                    HelpCommandRow(
+                        label: "2. Pull the default vision model",
+                        command: "ollama pull qwen3-vl:2b-instruct"
+                    )
+
+                    HStack(spacing: 12) {
+                        Link(destination: URL(string: "https://ollama.com/download")!) {
+                            Label("Ollama download page", systemImage: "arrow.up.right.square")
+                                .font(.caption)
+                        }
+                        Link(destination: URL(string: "https://ollama.com/library/qwen3-vl")!) {
+                            Label("qwen3-vl models", systemImage: "arrow.up.right.square")
+                                .font(.caption)
+                        }
+                    }
+
+                    Button {
+                        Task { await refreshModels() }
+                    } label: {
+                        Label("Re-check for installed models", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                }
             }
+
+            // Search Agent section temporarily hidden — LLM-powered Discover
+            // search is feature-flagged off until the agent flow is stable.
 
             DisclosureGroup(isExpanded: $showAdvanced) {
                 HStack {
@@ -226,14 +282,62 @@ struct StatusChip: View {
     }
 }
 
-/// Kept for backward-compat references from old callers — not in the tab list anymore.
+/// One install step: a label, a monospaced command in a tinted pill, and a
+/// copy button. Clicking the pill copies too. Used in the Connections
+/// onboarding block so users can paste a setup command into Terminal in two
+/// clicks.
+private struct HelpCommandRow: View {
+    let label: String
+    let command: String
+    @State private var copied: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(command)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                Button {
+                    copyToClipboard()
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .help(copied ? "Copied" : "Copy command")
+            }
+        }
+    }
+
+    private func copyToClipboard() {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+        #endif
+        withAnimation { copied = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation { copied = false }
+        }
+    }
+}
+
+/// Connections — Unsplash (image source) + Ollama (intelligence) on a single page.
 struct ConnectionsView: View {
     var body: some View {
-        TabView {
-            SourceView()
-                .tabItem { Label("Source", systemImage: "link") }
-            IntelligenceView()
-                .tabItem { Label("Intelligence", systemImage: "brain") }
+        ScrollView {
+            VStack(spacing: 0) {
+                SourceView()
+                IntelligenceView()
+            }
         }
     }
 }

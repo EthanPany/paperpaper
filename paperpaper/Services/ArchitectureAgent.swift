@@ -34,7 +34,13 @@ enum ArchitectureAgent {
         var architect: String?
         var year: Int?
         var style: String?
+        /// 1-sentence intro. Kept under `oneSentence` so existing call sites
+        /// (widget payload, NowView card) keep reading what they always read.
         var oneSentence: String?
+        /// 2–3 sentence intro for medium widgets / NowView main caption.
+        var blurbMedium: String?
+        /// 3–5 sentence essay for systemLarge widget / detail panes.
+        var blurbLong: String?
         /// More-specific place description (e.g. "Brooklyn Bridge Park,
         /// Brooklyn, NY") that the agent committed via `commit_enrichment`'s
         /// `location` field. Backfills photo.locationName when Unsplash gave
@@ -141,7 +147,7 @@ enum ArchitectureAgent {
             log.info("agent iter=\(iteration, privacy: .public): no tool / no JSON, prompting commit")
             messages.append(OllamaChatMessage(
                 role: "user",
-                content: "Now call the `commit_enrichment` tool with your final answer. If you can't identify a specific building, set building_name=null and confidence=\"low\", but still produce a one_sentence describing the place or scene.",
+                content: "Now call the `commit_enrichment` tool with your final answer. Remember: blurb_short (1 sentence), blurb_medium (2–3 sentences), and blurb_long (3–5 sentences) are ALL required. If you can't identify a specific building, set building_name=null and confidence=\"low\" — but still produce all three blurbs describing the place or scene. Do NOT invent architects or years; use null when uncertain.",
                 images: nil, tool_calls: nil, tool_name: nil
             ))
         }
@@ -156,59 +162,97 @@ enum ArchitectureAgent {
         """
         You are an architecture and place-identification agent. The user gives you a photo
         plus metadata. You may call tools to gather more context, then you MUST finish by
-        calling the `commit_enrichment` tool with your conclusion.
+        calling `commit_enrichment` with your conclusion.
 
-        Tools available:
-          • mapkit_search(query, latitude?, longitude?, radius_meters?) — search Apple Maps
-            for landmarks/POIs. Use when you suspect a different location than the EXIF
-            GPS, or to look up a specific candidate building name.
-          • web_search(query) — open-web search (only available when configured).
-          • commit_enrichment(building_name?, architect?, year?, style?, location,
-            one_sentence, confidence) — REQUIRED terminal call. `location` and
-            `one_sentence` are REQUIRED (never null). Use null for building_name /
-            architect / year / style only when uncertain. confidence ∈
-            {"high","medium","low"} reflects your certainty in the building
-            identification.
+        Tools:
+          • mapkit_search(query, latitude?, longitude?, radius_meters?) — Apple Maps POI search.
+          • web_search(query) — open-web search (use ONLY when present in the tools list).
+          • commit_enrichment(...) — REQUIRED terminal call. Schema below.
 
-        Rules:
-          • `building_name` and `location` MUST be distinct fields with different
-            granularity. They are NOT synonyms.
-              - `building_name` = the SPECIFIC subject of the photo: a named
-                building, bridge, monument, park, plaza, or natural landmark
-                ("Brooklyn Bridge", "Sagrada Família", "Empire State Building",
-                "Yosemite Half Dome", "Trafalgar Square Fountain"). It is what
-                a viewer would point at and name.
-              - `location` = the SURROUNDING geographic context where that
-                subject sits — neighborhood / district + city + country
-                ("DUMBO, Brooklyn, NY, USA", "Eixample, Barcelona, Spain").
-              - building_name and location must NEVER repeat the same string.
-                If the photo is "Brooklyn Bridge", building_name="Brooklyn
-                Bridge" and location="DUMBO, Brooklyn, NY, USA" — not
-                building_name="Brooklyn, NYC" and location="Brooklyn, NYC,
-                USA" (those are both location strings; there's no anchor).
-              - If you cannot identify a specific subject (generic street,
-                sky, water, flowers): set building_name=null. Don't fill
-                building_name with a city — that's what location is for.
-          • Don't invent architects or dates. Use null when unsure.
-          • `location` MUST be at street / building / district granularity — never
-            just the country, never just the city if a more specific anchor is
-            available. Format "Anchor, City, Country" where Anchor is a named
-            neighborhood / district / public park / plaza or named street.
-              - Good: "DUMBO, Brooklyn, NY, USA"
-              - Good: "Las Ramblas, Barcelona, Spain"
-              - Good: "Roppongi, Tokyo, Japan"
-              - Bad: "United States", "Spain", "Tokyo" alone
-              - Bad: same string as building_name
-            If the EXIF GPS or your tool results don't pin the photo to a specific
-            anchor, use `mapkit_search` first — find the nearest neighborhood,
-            park, or named area and base `location` on that. Only fall back to
-            "City, Country" when nothing more specific can be confidently named,
-            and never fabricate.
-          • If the photo is generic (street, sky, flowers) or the building can't be
-            confidently named, still commit with one_sentence describing the place
-            ("A street view in Lisbon, Portugal") and confidence="low" — but
-            `location` still must reach district level when possible.
-          • Keep tool use short — at most 2 lookups before committing.
+        ============================================================
+        HARD RULES — read carefully, violations make the output unusable.
+        ============================================================
+
+        1) NO HALLUCINATION.
+           If you don't *know* a fact, set the field to null. Do NOT guess an architect
+           because the building looks "famous-ish." Do NOT guess a year. Famous buildings
+           that you confidently recognize are fine; everything else → null.
+             • Wrong: "this looks like a 1970s skyscraper" → year: 1973
+             • Right: → year: null
+
+        2) building_name VS location ARE DIFFERENT THINGS.
+           • building_name = the SPECIFIC subject the viewer is looking at
+             ("Brooklyn Bridge", "Sagrada Família", "Half Dome").
+             null if no specific subject exists.
+           • location = surrounding geographic context, "Anchor, City, Country"
+             ("DUMBO, Brooklyn, NY, USA", "Eixample, Barcelona, Spain").
+             They MUST be different strings. Never put a city in building_name.
+
+        3) location IS REQUIRED and must reach district granularity when possible.
+           Use mapkit_search if the EXIF area is too vague (e.g. just "Spain").
+           Last resort fallback: "City, Country". Never just a country alone.
+
+        4) THREE BLURBS, EACH A DIFFERENT LENGTH. All three are required.
+           • blurb_short  — exactly 1 sentence, ≤ 18 words. Single neutral
+             description. Used in the smallest widget.
+           • blurb_medium — 2 to 3 sentences, ≤ 55 words. Reads like a
+             magazine caption: subject, era / architect / style, one
+             distinguishing detail. If you don't know the architect / year,
+             write the medium blurb without naming them — describe what's
+             actually visible (materials, height, setting, time of day).
+           • blurb_long   — 3 to 5 sentences, ≤ 130 words. Mini-introduction:
+             when (only if known), who designed it (only if known), the
+             architectural style and a defining feature, optionally one
+             notable historical event, and what it is used for today.
+             Skip clauses you don't know — DO NOT pad with invented facts.
+
+        5) Tool use: at most 2 lookups before committing. Don't loop.
+
+        ============================================================
+        FEW-SHOT EXAMPLES (for the commit_enrichment payload)
+        ============================================================
+
+        Example A — famous, fully known landmark:
+        {
+          "building_name": "Empire State Building",
+          "architect": "Shreve, Lamb & Harmon",
+          "year": 1931,
+          "style": "Art Deco",
+          "location": "Midtown Manhattan, New York, NY, USA",
+          "blurb_short": "The Empire State Building rises 102 stories above Midtown Manhattan.",
+          "blurb_medium": "Completed in 1931 by Shreve, Lamb & Harmon, the Empire State Building is a defining Art Deco skyscraper. Its limestone-and-aluminum tower was the world's tallest building for nearly forty years.",
+          "blurb_long": "Completed in 1931 to designs by Shreve, Lamb & Harmon, the Empire State Building is one of the most recognizable Art Deco towers in the world. It rises 102 stories above Midtown Manhattan and held the title of world's tallest building until 1970. The setback massing, polished aluminum spandrels, and chrome-nickel detailing are textbook Art Deco. Survived a B-25 bomber strike on the 79th floor in 1945. Today it remains an office tower with public observation decks on the 86th and 102nd floors.",
+          "confidence": "high"
+        }
+
+        Example B — recognizable building, architect uncertain → null instead of guessing:
+        {
+          "building_name": "Lloyd's of London",
+          "architect": null,
+          "year": null,
+          "style": "High-tech",
+          "location": "City of London, London, UK",
+          "blurb_short": "A high-tech insurance HQ in the City of London with services exposed on its exterior.",
+          "blurb_medium": "Lloyd's of London is a landmark of the High-tech architectural movement. Stainless-steel ductwork, lifts, and stairwells run up the outside of the building, leaving the interior column-free.",
+          "blurb_long": "Lloyd's of London is a defining example of High-tech architecture, identified by the deliberate exposure of structure and services on the building's exterior. Stainless-steel ducts, glass lifts, and concrete stair towers climb the facade, freeing the interior into one large column-free atrium. The form is industrial-machine rather than monumental, and the building reads as a piece of equipment for the insurance market it houses. Today it remains the headquarters of the Lloyd's insurance market.",
+          "confidence": "high"
+        }
+
+        Example C — generic scene, no specific subject:
+        {
+          "building_name": null,
+          "architect": null,
+          "year": null,
+          "style": null,
+          "location": "Alfama, Lisbon, Portugal",
+          "blurb_short": "A narrow tiled street in the Alfama district of Lisbon at dusk.",
+          "blurb_medium": "A residential street in Alfama, Lisbon's oldest neighborhood, photographed at dusk. Pastel-tiled facades, wrought-iron balconies, and laundry lines define the streetscape.",
+          "blurb_long": "A residential street in Alfama, the oldest neighborhood of Lisbon, photographed at dusk. The facades are clad in azulejos — Portugal's signature glazed ceramic tiles — and dressed with wrought-iron balconies and lines of drying laundry. Alfama survived the 1755 earthquake that flattened most of the city, which is why its medieval street grid and Moorish-era density are still visible today. The district is residential, with cafés, fado bars, and small shops occupying the ground floors.",
+          "confidence": "low"
+        }
+
+        ============================================================
+        Now produce a commit for the photo the user sent.
         """
     }
 
@@ -261,17 +305,18 @@ enum ArchitectureAgent {
             ]
         ))
 
-        // Only expose web_search when the user has configured it AND has an API key.
-        if UserDefaults.standard.bool(forKey: "ollama.webSearch"),
-           let apiKey = KeychainService.shared.get(.ollamaAuthHeader),
-           !apiKey.isEmpty {
+        // Expose web_search whenever an Ollama API key is present. Ollama's
+        // hosted web search (ollama.com account) is what backs this tool —
+        // there's no local-only fallback, so the API key gate is sufficient
+        // and the user shouldn't need a separate toggle.
+        if let apiKey = KeychainService.shared.get(.ollamaAuthHeader), !apiKey.isEmpty {
             tools.append(OllamaToolSpec.function(
                 name: "web_search",
-                description: "Search the open web via Ollama. Use to look up architects, year built, style for a candidate building name.",
+                description: "Search the open web via Ollama's hosted search. Use to confirm architect / year / style for a candidate building before committing.",
                 parametersSchema: [
                     "type": "object",
                     "properties": [
-                        "query": ["type": "string", "description": "Search query string"]
+                        "query": ["type": "string", "description": "Search query string."]
                     ],
                     "required": ["query"]
                 ]
@@ -285,14 +330,16 @@ enum ArchitectureAgent {
                 "type": "object",
                 "properties": [
                     "building_name": ["type": ["string", "null"], "description": "The SPECIFIC named subject of the photo: a building, bridge, monument, park, plaza, or natural landmark (e.g. \"Brooklyn Bridge\", \"Sagrada Família\", \"Half Dome\"). NOT a city or neighborhood — those go in `location`. Null if no specific subject can be confidently named."],
-                    "architect": ["type": ["string", "null"], "description": "Architect name. Null if unknown."],
-                    "year": ["type": ["integer", "null"], "description": "Year built (or completion year). Null if unknown."],
-                    "style": ["type": ["string", "null"], "description": "Architectural style. Null if not applicable."],
-                    "location": ["type": "string", "description": "REQUIRED. The SURROUNDING area at neighborhood/district granularity + city + country, formatted \"Neighborhood, City, Country\" (e.g. \"DUMBO, Brooklyn, NY, USA\", \"Eixample, Barcelona, Spain\"). MUST be different from building_name — if building_name is \"Brooklyn Bridge\", location is \"DUMBO, Brooklyn, NY, USA\", NOT \"Brooklyn, NYC\". Never just a country."],
-                    "one_sentence": ["type": "string", "description": "REQUIRED. Single neutral sentence under 25 words describing the place/scene."],
+                    "architect": ["type": ["string", "null"], "description": "Architect name. Null if unknown. DO NOT GUESS — null is required when uncertain."],
+                    "year": ["type": ["integer", "null"], "description": "Year built (or completion year). Null if unknown. DO NOT GUESS."],
+                    "style": ["type": ["string", "null"], "description": "Architectural style. Null if not applicable or unknown."],
+                    "location": ["type": "string", "description": "REQUIRED. \"Anchor, City, Country\" at neighborhood/district granularity. Different string from building_name. Never just a country."],
+                    "blurb_short": ["type": "string", "description": "REQUIRED. Exactly 1 sentence, ≤ 18 words. Single neutral description used by the smallest widget."],
+                    "blurb_medium": ["type": "string", "description": "REQUIRED. 2–3 sentences, ≤ 55 words. Magazine caption: subject, era/architect/style, one distinguishing detail. Skip clauses you don't know — never invent."],
+                    "blurb_long": ["type": "string", "description": "REQUIRED. 3–5 sentences, ≤ 130 words. Mini-introduction: when, who designed it (only if known), style + defining feature, optionally one historical note, and current use. Omit unknowns rather than fabricating."],
                     "confidence": ["type": "string", "enum": ["high", "medium", "low"], "description": "Self-rated confidence in building_name."]
                 ],
-                "required": ["location", "one_sentence", "confidence"]
+                "required": ["location", "blurb_short", "blurb_medium", "blurb_long", "confidence"]
             ]
         ))
 
@@ -302,15 +349,33 @@ enum ArchitectureAgent {
     // MARK: - Tool execution
 
     private static func runMapKitSearch(_ args: AnyJSON?, defaultGPS: (lat: Double, lon: Double)?) async -> String {
-        struct Args: Decodable {
+        // Some models (notably qwen3-vl) return numeric tool args as JSON
+        // strings ("800.0" instead of 800.0). Parse leniently.
+        struct Args {
             var query: String
             var latitude: Double?
             var longitude: Double?
             var radius_meters: Double?
         }
-        guard let parsed = args?.decode(Args.self) else {
+        guard let raw = args?.raw,
+              let obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] else {
             return "{\"error\":\"could not parse mapkit_search args\"}"
         }
+        func num(_ key: String) -> Double? {
+            if let n = obj[key] as? Double { return n }
+            if let n = obj[key] as? Int { return Double(n) }
+            if let s = obj[key] as? String { return Double(s) }
+            return nil
+        }
+        guard let q = obj["query"] as? String, !q.isEmpty else {
+            return "{\"error\":\"could not parse mapkit_search args\"}"
+        }
+        let parsed = Args(
+            query: q,
+            latitude: num("latitude"),
+            longitude: num("longitude"),
+            radius_meters: num("radius_meters")
+        )
         let lat = parsed.latitude ?? defaultGPS?.lat
         let lon = parsed.longitude ?? defaultGPS?.lon
         let radius = parsed.radius_meters ?? 800
@@ -387,19 +452,60 @@ enum ArchitectureAgent {
 
     // MARK: - Commit decoding
 
-    private struct CommitArgs: Decodable {
+    private struct CommitArgs {
         var building_name: String?
         var architect: String?
         var year: Int?
         var style: String?
         var location: String?
+        var blurb_short: String?
+        var blurb_medium: String?
+        var blurb_long: String?
+        /// Legacy field — older prompts asked for `one_sentence`. Treat as a
+        /// fallback for blurb_short if the new fields are missing.
         var one_sentence: String?
         var confidence: String?
     }
 
+    /// Lenient parse of a `commit_enrichment` arg dict. Small models routinely
+    /// stringify numbers ("2013.0" instead of 2013) or wrap nullable fields in
+    /// arrays / NSNull. Decoding via Codable throws on any of those and drops
+    /// the whole commit — so we walk the dict by hand and coerce per field.
+    private static func parseCommitArgs(_ obj: [String: Any]) -> CommitArgs {
+        func str(_ key: String) -> String? {
+            if let s = obj[key] as? String { return s }
+            if let n = obj[key] as? NSNumber { return n.stringValue }
+            return nil
+        }
+        func int(_ key: String) -> Int? {
+            if let n = obj[key] as? Int { return n }
+            if let d = obj[key] as? Double { return Int(d) }
+            if let s = obj[key] as? String {
+                if let i = Int(s) { return i }
+                if let d = Double(s) { return Int(d) }
+            }
+            return nil
+        }
+        return CommitArgs(
+            building_name: str("building_name"),
+            architect: str("architect"),
+            year: int("year"),
+            style: str("style"),
+            location: str("location"),
+            blurb_short: str("blurb_short"),
+            blurb_medium: str("blurb_medium"),
+            blurb_long: str("blurb_long"),
+            one_sentence: str("one_sentence"),
+            confidence: str("confidence")
+        )
+    }
+
     private static func decodeCommit(_ args: AnyJSON?) -> Confirmed? {
-        guard let parsed = args?.decode(CommitArgs.self) else { return nil }
-        return makeConfirmed(parsed)
+        guard let raw = args?.raw,
+              let obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] else {
+            return nil
+        }
+        return makeConfirmed(parseCommitArgs(obj))
     }
 
     /// Fallback: small models sometimes ignore tools and emit JSON in the
@@ -410,10 +516,10 @@ enum ArchitectureAgent {
         }
         let jsonString = String(text[jsonRange])
         guard let data = jsonString.data(using: .utf8),
-              let parsed = try? JSONDecoder().decode(CommitArgs.self, from: data) else {
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return nil
         }
-        return makeConfirmed(parsed)
+        return makeConfirmed(parseCommitArgs(obj))
     }
 
     private static func makeConfirmed(_ args: CommitArgs) -> Confirmed? {
@@ -421,7 +527,12 @@ enum ArchitectureAgent {
             let t = s?.trimmingCharacters(in: .whitespacesAndNewlines)
             return (t?.isEmpty ?? true) ? nil : t
         }
-        let oneSentence = trimmed(args.one_sentence)
+        // blurb_short is the new "one sentence" — fall back to the legacy
+        // one_sentence field if a model still emits it.
+        let blurbShort = trimmed(args.blurb_short) ?? trimmed(args.one_sentence)
+        let blurbMedium = trimmed(args.blurb_medium)
+        let blurbLong = trimmed(args.blurb_long)
+        let oneSentence = blurbShort
         var bldg = trimmed(args.building_name)
         let location = trimmed(args.location)
         // Defensive: even with the schema saying "building_name and location
@@ -450,6 +561,8 @@ enum ArchitectureAgent {
                 year: args.year,
                 style: trimmed(args.style),
                 oneSentence: oneSentence,
+                blurbMedium: blurbMedium,
+                blurbLong: blurbLong,
                 location: location
             )
         }
@@ -462,6 +575,8 @@ enum ArchitectureAgent {
                 year: nil,
                 style: nil,
                 oneSentence: oneSentence,
+                blurbMedium: blurbMedium,
+                blurbLong: blurbLong,
                 location: location
             )
         }

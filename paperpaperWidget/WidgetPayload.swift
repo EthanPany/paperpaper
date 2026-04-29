@@ -9,6 +9,9 @@ struct WidgetPayload: Codable, Sendable {
     var year: Int?
     var style: String?
     var oneSentence: String?
+    var blurbShort: String?
+    var blurbMedium: String?
+    var blurbLong: String?
     var area: String
     var authorName: String
     var authorProfileURLString: String?

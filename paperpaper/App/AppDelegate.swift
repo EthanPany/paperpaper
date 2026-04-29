@@ -56,7 +56,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 260, height: 360)
+        // Tall enough for: wallpaper preview (150) + status block (~80) +
+        // five action buttons (~26 each) + open / quit (~52). NSPopover
+        // doesn't auto-resize; SwiftUI's intrinsic content goes through this
+        // value, so undersize → content gets clipped.
+        popover.contentSize = NSSize(width: 300, height: 540)
         popover.contentViewController = NSHostingController(rootView: MenuBarContent(openMainWindow: { [weak self] in
             self?.popover?.performClose(nil)
             self?.openMainWindow()

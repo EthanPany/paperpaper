@@ -1,7 +1,37 @@
 import Foundation
+import os
 #if canImport(AppKit)
 import AppKit
 #endif
+
+private let ollamaLog = Logger(subsystem: "ep.paperpaper", category: "ollama")
+
+/// Compact summary of a JSON body for logging — replaces long strings (image
+/// base64) with "<n bytes>" markers so we can see the structure without
+/// flooding Console.
+private func summarizeForLog(_ value: Any, depth: Int = 0) -> Any {
+    if let dict = value as? [String: Any] {
+        var out: [String: Any] = [:]
+        for (k, v) in dict { out[k] = summarizeForLog(v, depth: depth + 1) }
+        return out
+    }
+    if let arr = value as? [Any] {
+        return arr.map { summarizeForLog($0, depth: depth + 1) }
+    }
+    if let s = value as? String {
+        if s.count > 200 { return "<string \(s.count) chars: \(s.prefix(60))…>" }
+        return s
+    }
+    return value
+}
+
+private func logJSONBody(_ label: String, _ body: [String: Any]) {
+    let summary = summarizeForLog(body)
+    if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted]),
+       let str = String(data: data, encoding: .utf8) {
+        ollamaLog.notice("\(label, privacy: .public):\n\(str, privacy: .public)")
+    }
+}
 
 struct OllamaEnrichment: Decodable, Sendable {
     let name: String?
@@ -442,9 +472,15 @@ struct OllamaToolSpec: Codable, Sendable {
     }
 
     static func function(name: String, description: String, parametersSchema: [String: Any]) -> OllamaToolSpec {
-        let data = (try? JSONSerialization.data(withJSONObject: parametersSchema)) ?? Data()
-        let schema = (try? JSONDecoder().decode(AnyJSON.self, from: data)) ?? AnyJSON.empty
-        return OllamaToolSpec(type: "function", function: .init(name: name, description: description, parameters: schema))
+        // Store the JSON bytes directly. We deliberately avoid the
+        // JSONDecoder→AnyJSON round-trip here: AnyJSON.encode(to:) writes its
+        // raw payload as a JSON string, so decoding `[String: AnyJSON]` and
+        // re-encoding it stringifies every nested value. That produced
+        //   "required": "[\"query\"]", "properties": "{...}"
+        // on the wire, which Ollama rejected with
+        //   "Value looks like object, but can't find closing '}' symbol".
+        let data = (try? JSONSerialization.data(withJSONObject: parametersSchema)) ?? "{}".data(using: .utf8)!
+        return OllamaToolSpec(type: "function", function: .init(name: name, description: description, parameters: AnyJSON(raw: data)))
     }
 }
 
@@ -474,21 +510,59 @@ extension OllamaService {
             "stream": false,
             "options": ["temperature": temperature],
         ]
-        // Encode messages via JSONEncoder so images/tool_calls round-trip.
-        let messagesData = try JSONEncoder().encode(messages)
-        if let arr = try JSONSerialization.jsonObject(with: messagesData) as? [[String: Any]] {
-            body["messages"] = arr
-        }
-        if !tools.isEmpty {
-            let toolsData = try JSONEncoder().encode(tools)
-            if let arr = try JSONSerialization.jsonObject(with: toolsData) as? [[String: Any]] {
-                body["tools"] = arr
+        // Build messages manually. We deliberately avoid JSONEncoder here for
+        // the same reason as `tools` below: AnyJSON.encode(to:) stringifies
+        // its raw JSON, so an assistant turn's tool_calls[].function.arguments
+        // (an object) ships as a JSON-encoded string. Ollama rejects with
+        //   "Value looks like object, but can't find closing '}' symbol"
+        var msgArr: [[String: Any]] = []
+        for m in messages {
+            var d: [String: Any] = ["role": m.role, "content": m.content]
+            if let images = m.images { d["images"] = images }
+            if let toolCalls = m.tool_calls {
+                var tcArr: [[String: Any]] = []
+                for tc in toolCalls {
+                    var fn: [String: Any] = ["name": tc.function.name]
+                    if let args = tc.function.arguments {
+                        fn["arguments"] = (try? JSONSerialization.jsonObject(with: args.raw)) ?? [String: Any]()
+                    } else {
+                        fn["arguments"] = [String: Any]()
+                    }
+                    tcArr.append(["function": fn])
+                }
+                d["tool_calls"] = tcArr
             }
+            if let tn = m.tool_name { d["tool_name"] = tn }
+            msgArr.append(d)
         }
+        body["messages"] = msgArr
+        if !tools.isEmpty {
+            // Build tools manually so `parameters` ships as a JSON object, not
+            // a JSON-encoded string. AnyJSON's Codable round-trip stringifies
+            // the schema, which Ollama rejects with:
+            //   json: cannot unmarshal string into Go struct field
+            //   ToolFunction.tools.function.parameters of type api.ToolFunctionParameters
+            var toolsArr: [[String: Any]] = []
+            for t in tools {
+                let params: Any = (try? JSONSerialization.jsonObject(with: t.function.parameters.raw)) ?? [String: Any]()
+                let fn: [String: Any] = [
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "parameters": params,
+                ]
+                toolsArr.append(["type": t.type, "function": fn])
+            }
+            body["tools"] = toolsArr
+        }
+
+        logJSONBody("chat request body", body)
+
+        let httpBody = try JSONSerialization.data(withJSONObject: body)
+        ollamaLog.notice("chat POST \(url.absoluteString, privacy: .public) bytes=\(httpBody.count, privacy: .public) toolCount=\(tools.count, privacy: .public) msgCount=\(messages.count, privacy: .public)")
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        req.httpBody = httpBody
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let auth = authorizationHeader() {
             req.setValue(auth, forHTTPHeaderField: "Authorization")
@@ -503,19 +577,27 @@ extension OllamaService {
         do {
             (data, response) = try await session.data(for: req)
         } catch {
+            ollamaLog.error("chat transport failed: \(error.localizedDescription, privacy: .public)")
             throw OllamaError.transport(error)
         }
         guard let http = response as? HTTPURLResponse else {
+            ollamaLog.error("chat: response was not HTTPURLResponse")
             throw OllamaError.http(status: -1, body: "")
         }
+        let bodyString = String(data: data, encoding: .utf8) ?? ""
+        ollamaLog.notice("chat response status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public)")
         guard (200..<300).contains(http.statusCode) else {
-            throw OllamaError.http(status: http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
+            let snippet = bodyString.count > 800 ? String(bodyString.prefix(800)) + "…" : bodyString
+            ollamaLog.error("chat HTTP \(http.statusCode, privacy: .public) body=\(snippet, privacy: .public)")
+            throw OllamaError.http(status: http.statusCode, body: bodyString)
         }
 
         do {
             let decoded = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
             return decoded.message
         } catch {
+            let snippet = bodyString.count > 600 ? String(bodyString.prefix(600)) + "…" : bodyString
+            ollamaLog.error("chat decode failed: \(error.localizedDescription, privacy: .public) raw=\(snippet, privacy: .public)")
             throw OllamaError.decoding(error)
         }
     }

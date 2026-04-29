@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct DiscoverView: View {
-    @AppStorage("agent.enabled") private var agentEnabled: Bool = false
+    // LLM-powered "Smart Search" is feature-flagged off until the agent flow
+    // is stable. Flip this to read @AppStorage("agent.enabled") to bring it back.
+    private let agentEnabled: Bool = false
     @State private var query: String = "architecture"
     @State private var agentPrompt: String = ""
     @State private var agentLocation: String = ""

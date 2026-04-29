@@ -112,7 +112,7 @@ private struct PhotoLayout: View {
     let mode: WidgetContentMode
     @Environment(\.widgetFamily) private var family
 
-    private var content: ModeContent { ModeContent.resolve(mode: mode, payload: payload) }
+    private var content: ModeContent { ModeContent.resolve(mode: mode, payload: payload, family: family) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -129,11 +129,11 @@ private struct PhotoLayout: View {
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1)
             }
-            if family == .systemLarge, let caption = content.caption, !caption.isEmpty {
+            if family != .systemSmall, let caption = content.caption, !caption.isEmpty {
                 Text(caption)
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(3)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(family == .systemLarge ? 6 : 2)
                     .padding(.top, 2)
             }
             HStack(spacing: 8) {
@@ -207,7 +207,7 @@ private struct CardLayout: View {
     let mode: WidgetContentMode
     @Environment(\.widgetFamily) private var family
 
-    private var content: ModeContent { ModeContent.resolve(mode: mode, payload: payload) }
+    private var content: ModeContent { ModeContent.resolve(mode: mode, payload: payload, family: family) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: family == .systemSmall ? 8 : 10) {
@@ -231,7 +231,7 @@ private struct CardLayout: View {
                 Text(caption)
                     .font(family == .systemLarge ? .footnote : .caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(family == .systemLarge ? 3 : 2)
+                    .lineLimit(family == .systemLarge ? 8 : 3)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -333,7 +333,7 @@ private struct ClearLayout: View {
     let mode: WidgetContentMode
     @Environment(\.widgetFamily) private var family
 
-    private var content: ModeContent { ModeContent.resolve(mode: mode, payload: payload) }
+    private var content: ModeContent { ModeContent.resolve(mode: mode, payload: payload, family: family) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -417,16 +417,16 @@ private struct ModeContent {
         return base
     }
 
-    static func resolve(mode: WidgetContentMode, payload: WidgetPayload) -> ModeContent {
+    static func resolve(mode: WidgetContentMode, payload: WidgetPayload, family: WidgetFamily) -> ModeContent {
         switch mode {
         case .photography:
-            return photographyContent(payload: payload)
+            return photographyContent(payload: payload, family: family)
         case .architecture:
-            return architectureContent(payload: payload)
+            return architectureContent(payload: payload, family: family)
         }
     }
 
-    private static func photographyContent(payload: WidgetPayload) -> ModeContent {
+    private static func photographyContent(payload: WidgetPayload, family: WidgetFamily) -> ModeContent {
         let place = payload.bestTitle
         let camera = payload.cameraLine
         let lens = payload.lensLine
@@ -463,7 +463,7 @@ private struct ModeContent {
         )
     }
 
-    private static func architectureContent(payload: WidgetPayload) -> ModeContent {
+    private static func architectureContent(payload: WidgetPayload, family: WidgetFamily) -> ModeContent {
         // Architecture mode: prefer building name as title; if enrichment
         // returned nothing (low confidence), bestTitle already falls back to
         // city / area, so we degrade gracefully into "place mode" without a
@@ -490,7 +490,7 @@ private struct ModeContent {
         return ModeContent(
             title: title,
             eyebrow: eyebrow,
-            caption: payload.oneSentence?.nilIfEmpty,
+            caption: payload.blurb(for: family),
             footer: payload.bestFooter,
             footerIcon: "location",
             footerExtra: payload.year.map { "\($0)" },
@@ -533,6 +533,21 @@ extension WidgetPayload {
     /// one-sentence — Unsplash descriptions are about photo content, not place.
     var bestCaption: String? { oneSentence?.nilIfEmpty }
 
+    /// Pick the right-length blurb for a widget family. Falls back through
+    /// shorter tiers when the longer ones are missing — e.g. an old payload
+    /// that only has `oneSentence` still gets used at every size.
+    func blurb(for family: WidgetFamily) -> String? {
+        let short = (blurbShort ?? oneSentence)?.nilIfEmpty
+        let medium = blurbMedium?.nilIfEmpty ?? short
+        let long = blurbLong?.nilIfEmpty ?? medium
+        switch family {
+        case .systemSmall: return short
+        case .systemMedium: return medium
+        case .systemLarge: return long
+        default: return medium
+        }
+    }
+
     /// Secondary location line. Only when it adds info beyond `bestTitle`.
     var bestFooter: String? {
         if locationComponents.count > 1 {
@@ -566,6 +581,9 @@ extension WidgetPayload {
         year: 1882,
         style: "Gothic revival",
         oneSentence: "A basilica in Barcelona, under construction since 1882.",
+        blurbShort: "A basilica in Barcelona, under construction since 1882.",
+        blurbMedium: "Antoni Gaudí's Sagrada Família is a basilica in Barcelona's Eixample district, under construction since 1882. Its blend of Gothic and Catalan modernist forms is unlike anything before or since.",
+        blurbLong: "Begun in 1882 to designs by Antoni Gaudí, the Sagrada Família is a Roman Catholic basilica that has been under continuous construction for over 140 years. The building fuses Gothic structural logic with Catalan modernist ornament, and Gaudí's later proposals departed even further into hyperboloid and parabolic geometries. Construction stalled during the Spanish Civil War when the original plaster models were destroyed, and modern crews have rebuilt the workflow from photographs and surviving fragments. Today it is one of Barcelona's most-visited landmarks, with completion targeted for the mid-2030s.",
         area: "Barcelona, Spain",
         authorName: "Anders Jildén",
         authorProfileURLString: nil,

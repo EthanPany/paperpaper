@@ -26,7 +26,16 @@ struct NowView: View {
     private var isDarkBackdrop: Bool { cardBackdropLuminance < 0.5 }
 
     var body: some View {
-        background
+        ZStack {
+            background
+                // .id forces SwiftUI to treat each photo's background as a
+                // distinct view, which makes .transition fire when `current`
+                // changes. Without this the AsyncImage just swaps its inner
+                // image with no animation.
+                .id(current?.unsplashID ?? "placeholder")
+                .transition(.opacity)
+        }
+        .animation(.easeInOut(duration: 0.45), value: current?.unsplashID)
             .frame(minWidth: 720, minHeight: 480)
             .ignoresSafeArea(edges: .top)
             // .overlay strictly clips its contents to the receiver's bounds,

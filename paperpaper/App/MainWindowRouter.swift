@@ -17,10 +17,19 @@ struct MainWindowRouter: View {
             switch mode {
             case .photo:
                 NowView()
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .leading).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    ))
             case .settings:
                 SettingsPane()
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
             }
         }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: mode)
         .frame(minWidth: 900, minHeight: 620)
         .toolbar {
             ToolbarItemGroup(placement: .principal) {
