@@ -31,11 +31,6 @@ final class RotationEngine {
     func startIfEnabled() {
         let rule = Store.shared.rule()
         if rule.enabled { start() } else { stop() }
-        // The rule edit screens save the SwiftData record and then call this
-        // helper to bounce the engine. That's also exactly when we want to
-        // broadcast the rule across iCloud, so we piggyback here rather than
-        // teaching every Form view about the sync coordinator.
-        iCloudSyncCoordinator.shared.publishRotationRule()
     }
 
     func start() {
@@ -51,6 +46,13 @@ final class RotationEngine {
         loopTask = Task { [weak self] in
             await self?.loop()
         }
+        // Both start() and stop() broadcast the rule to iCloud — together
+        // they cover every entry point: launch (startIfEnabled → start/stop),
+        // the schedule editor (which calls startIfEnabled after save), and
+        // the bare enable/disable toggle in RotationView (which calls start
+        // or stop directly). Coordinator no-ops if sync is disabled or this
+        // Mac isn't primary, so this stays cheap.
+        iCloudSyncCoordinator.shared.publishRotationRule()
     }
 
     func stop() {
@@ -60,6 +62,7 @@ final class RotationEngine {
         SpaceObserver.shared.stop()
         isRunning = false
         nextFireAt = nil
+        iCloudSyncCoordinator.shared.publishRotationRule()
     }
 
     func rotateNow() async {

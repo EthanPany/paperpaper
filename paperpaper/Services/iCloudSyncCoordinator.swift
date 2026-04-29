@@ -39,12 +39,17 @@ final class iCloudSyncCoordinator {
 
     // MARK: - KVS keys
     private enum K {
-        static let primaryID   = "sync.primaryDeviceID"
-        static let primaryName = "sync.primaryDeviceName"
-        static let photoID     = "sync.currentPhotoID"
-        static let photoAt     = "sync.currentPhotoUpdatedAt"
-        static let ruleJSON    = "sync.rotationRuleJSON"
-        static let ruleAt      = "sync.rotationRuleUpdatedAt"
+        static let primaryID    = "sync.primaryDeviceID"
+        static let primaryName  = "sync.primaryDeviceName"
+        static let photoID      = "sync.currentPhotoID"
+        static let photoAt      = "sync.currentPhotoUpdatedAt"
+        /// Writer ID stamped on every photo / rule publish. Receivers reject
+        /// writes whose writer doesn't match the current primary — kills the
+        /// "stale write from previous primary lands after handoff" race.
+        static let photoWriter  = "sync.currentPhotoWriterDeviceID"
+        static let ruleJSON     = "sync.rotationRuleJSON"
+        static let ruleAt       = "sync.rotationRuleUpdatedAt"
+        static let ruleWriter   = "sync.rotationRuleWriterDeviceID"
     }
 
     // MARK: - Local state, surfaced to UI
@@ -126,6 +131,7 @@ final class iCloudSyncCoordinator {
     func publishPhotoApplied(unsplashID: String) {
         guard isEnabled, isPrimaryHere else { return }
         kvs.set(unsplashID, forKey: K.photoID)
+        kvs.set(deviceID, forKey: K.photoWriter)
         kvs.set(Date.now.timeIntervalSince1970, forKey: K.photoAt)
         kvs.synchronize()
         lastSyncAt = .now
@@ -139,6 +145,7 @@ final class iCloudSyncCoordinator {
         let snap = RuleSnapshot.snapshotting(rule)
         guard let data = try? JSONEncoder().encode(snap) else { return }
         kvs.set(data, forKey: K.ruleJSON)
+        kvs.set(deviceID, forKey: K.ruleWriter)
         kvs.set(Date.now.timeIntervalSince1970, forKey: K.ruleAt)
         kvs.synchronize()
         lastSyncAt = .now
@@ -173,16 +180,34 @@ final class iCloudSyncCoordinator {
         // loop with the rotation engine.
         guard !isPrimaryHere else { return }
 
+        let currentPrimary = kvs.string(forKey: K.primaryID) ?? ""
+
         // Rule first — the photo apply can take minutes to download, but the
         // schedule update should be instant.
         if let data = kvs.data(forKey: K.ruleJSON),
-           let snap = try? JSONDecoder().decode(RuleSnapshot.self, from: data) {
+           let snap = try? JSONDecoder().decode(RuleSnapshot.self, from: data),
+           writerIsCurrentPrimary(kvs.string(forKey: K.ruleWriter), expected: currentPrimary, kind: "rule") {
             applyRuleSnapshot(snap)
         }
 
-        if let id = kvs.string(forKey: K.photoID), !id.isEmpty {
+        if let id = kvs.string(forKey: K.photoID), !id.isEmpty,
+           writerIsCurrentPrimary(kvs.string(forKey: K.photoWriter), expected: currentPrimary, kind: "photo") {
             mirrorPhoto(unsplashID: id)
         }
+    }
+
+    /// Rejects writes from anyone who isn't the current primary. Catches the
+    /// race where a previously-primary device finishes a publish AFTER the
+    /// primary flag has been handed off to a different Mac. Without this, the
+    /// stale write would clobber the new primary's state.
+    private func writerIsCurrentPrimary(_ writer: String?, expected: String, kind: String) -> Bool {
+        // Empty writer ID = an old write from before this field existed, or
+        // the field was never written. Accept if we have a primary at all
+        // (back-compat) — first-publish on the new primary will populate it.
+        guard let writer, !writer.isEmpty else { return !expected.isEmpty }
+        if writer == expected { return true }
+        log.notice("ignoring stale \(kind, privacy: .public) write: writer=\(writer, privacy: .public) currentPrimary=\(expected, privacy: .public)")
+        return false
     }
 
     private func applyRuleSnapshot(_ snap: RuleSnapshot) {

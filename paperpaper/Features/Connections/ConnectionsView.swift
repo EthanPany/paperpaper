@@ -91,17 +91,30 @@ struct IntelligenceView: View {
         !availableModels.contains(ollamaModel) && !availableModels.isEmpty
     }
 
-    /// Show the install-help block when Ollama is unreachable OR reachable
-    /// but with zero models pulled. Once the user has at least one model,
-    /// hide it — they're past the onboarding step.
+    /// Show the install-help block when Ollama is unreachable, when no
+    /// models are installed at all, OR when the user's currently-selected
+    /// model isn't in the local list (likely "I configured the default but
+    /// haven't pulled it"). Hide only once the configured model is present.
     private var needsInstallHelp: Bool {
-        modelsError != nil || availableModels.isEmpty
+        if modelsError != nil { return true }
+        if availableModels.isEmpty { return true }
+        let trimmed = ollamaModel.trimmingCharacters(in: .whitespaces)
+        return !trimmed.isEmpty && !availableModels.contains(trimmed)
     }
 
     private var installHelpHeadline: String {
         if modelsError != nil { return "Ollama isn't running." }
         if availableModels.isEmpty { return "No models installed yet." }
-        return ""
+        return "The model \"\(ollamaModel)\" isn't pulled yet."
+    }
+
+    /// Pull command tailored to the currently-selected model so the user
+    /// can copy-paste it directly. Falls back to the default model name when
+    /// the field is blank.
+    private var pullCommand: String {
+        let trimmed = ollamaModel.trimmingCharacters(in: .whitespaces)
+        let model = trimmed.isEmpty ? "qwen3-vl:2b-instruct" : trimmed
+        return "ollama pull \(model)"
     }
 
     var body: some View {
@@ -174,8 +187,8 @@ struct IntelligenceView: View {
                         command: "brew install ollama && ollama serve"
                     )
                     HelpCommandRow(
-                        label: "2. Pull the default vision model",
-                        command: "ollama pull qwen3-vl:2b-instruct"
+                        label: "2. Pull the vision model",
+                        command: pullCommand
                     )
 
                     HStack(spacing: 12) {

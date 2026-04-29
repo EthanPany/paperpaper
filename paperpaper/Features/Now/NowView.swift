@@ -121,18 +121,38 @@ struct NowView: View {
 
     @ViewBuilder
     private var background: some View {
-        if let photo = current, let url = photo.regularURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img):
-                    img.resizable().scaledToFill()
-                default:
-                    PlaceholderGradient()
+        if let photo = current {
+            // Prefer the local cache copy. By the time the user sees this
+            // view we've already downloaded the bytes for the rotation, so
+            // hitting Unsplash again on every photo change is wasted network
+            // and breaks the crossfade (AsyncImage shows its placeholder
+            // mid-fade until the new download finishes). Fall back to the
+            // Unsplash URL only when the cache is missing — first launch,
+            // user-evicted, mirrored-from-iCloud-but-not-yet-downloaded.
+            let cachedURL = ImageCache.shared.fileURL(for: photo.unsplashID)
+            if FileManager.default.fileExists(atPath: cachedURL.path),
+               let nsImage = NSImage(contentsOf: cachedURL) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    .ignoresSafeArea()
+            } else if let url = photo.regularURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable().scaledToFill()
+                    default:
+                        PlaceholderGradient()
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .ignoresSafeArea()
+            } else {
+                PlaceholderGradient().ignoresSafeArea()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
-            .ignoresSafeArea()
         } else {
             PlaceholderGradient()
                 .ignoresSafeArea()
