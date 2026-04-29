@@ -131,9 +131,9 @@ private struct PhotoLayout: View {
             }
             if family != .systemSmall, let caption = content.caption, !caption.isEmpty {
                 Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.9))
-                    .lineLimit(family == .systemLarge ? 6 : 2)
+                    .font(family == .systemLarge ? .footnote : .caption)
+                    .foregroundStyle(.white.opacity(0.95))
+                    .lineLimit(family == .systemLarge ? 8 : 3)
                     .padding(.top, 2)
             }
             HStack(spacing: 8) {
@@ -229,9 +229,9 @@ private struct CardLayout: View {
 
             if family != .systemSmall, let caption = content.caption, !caption.isEmpty {
                 Text(caption)
-                    .font(family == .systemLarge ? .footnote : .caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(family == .systemLarge ? 8 : 3)
+                    .font(family == .systemLarge ? .callout : .footnote)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(family == .systemLarge ? 10 : 4)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -360,6 +360,14 @@ private struct ClearLayout: View {
                     .lineLimit(1)
             }
 
+            if family != .systemSmall, let caption = content.caption, !caption.isEmpty {
+                Text(caption)
+                    .font(family == .systemLarge ? .callout : .footnote)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(family == .systemLarge ? 10 : 4)
+                    .padding(.top, 8)
+            }
+
             Spacer(minLength: 0)
 
             if family == .systemLarge, let extra = content.footerExtra, !extra.isEmpty {
@@ -368,14 +376,9 @@ private struct ClearLayout: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-
-            if !payload.authorName.isEmpty {
-                Text("— \(payload.authorName)")
-                    .font(.caption2)
-                    .italic()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            // Author already appears as the eyebrow up top — don't duplicate
+            // it as a "— Andreas M" line at the bottom, especially in
+            // .systemSmall / .systemMedium where vertical space is tight.
         }
         .padding(family == .systemSmall ? 12 : 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -452,7 +455,7 @@ private struct ModeContent {
         return ModeContent(
             title: place,
             eyebrow: payload.authorName.isEmpty ? nil : payload.authorName.uppercased(),
-            caption: nil,
+            caption: payload.blurb(for: family),
             footer: camera ?? payload.bestFooter,
             footerIcon: camera != nil ? "camera" : "location",
             footerExtra: shot,

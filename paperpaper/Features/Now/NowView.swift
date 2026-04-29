@@ -197,10 +197,16 @@ private struct PhotoMetadataCard: View {
     /// not the immediate underlying pixels), so we steer it explicitly.
     let isDarkBackdrop: Bool
 
-    private var primaryTextColor: Color { isDarkBackdrop ? .white : Color(white: 0.08) }
-    private var secondaryTextColor: Color { isDarkBackdrop ? .white.opacity(0.85) : Color(white: 0.20) }
-    private var tertiaryTextColor: Color { isDarkBackdrop ? .white.opacity(0.78) : Color(white: 0.30) }
-    private var textShadowColor: Color { isDarkBackdrop ? .black.opacity(0.45) : .white.opacity(0.35) }
+    // Higher-contrast palette for both backdrops. On bright wallpapers (the
+    // common failure case) body text was getting lost over busy facades —
+    // body is now near-black, and the glass tint below is bumped from 0.26
+    // to 0.45 so the card actually reads as a card, not a light wash.
+    private var primaryTextColor: Color { isDarkBackdrop ? .white : Color(white: 0.04) }
+    private var secondaryTextColor: Color { isDarkBackdrop ? .white.opacity(0.92) : Color(white: 0.10) }
+    private var tertiaryTextColor: Color { isDarkBackdrop ? .white.opacity(0.82) : Color(white: 0.22) }
+    /// Soft halo behind text — same colour as the glass tint, kept low-radius.
+    /// Heavy white shadows on dark text were producing fringes; keep this small.
+    private var textShadowColor: Color { isDarkBackdrop ? .black.opacity(0.55) : .white.opacity(0.55) }
 
     /// Prefer the medium blurb (richer 2-3 sentence intro) when the agent
     /// produced one; fall back to oneSentence so old enrichments and partial
@@ -240,9 +246,9 @@ private struct PhotoMetadataCard: View {
 
             if let blurb = blurbText {
                 Text(blurb)
-                    .font(.callout)
+                    .font(.callout.weight(.medium))
                     .foregroundStyle(secondaryTextColor)
-                    .shadow(color: textShadowColor, radius: 2, x: 0, y: 1)
+                    .shadow(color: textShadowColor, radius: 4, x: 0, y: 0)
                     .lineLimit(5)
                     .frame(maxWidth: 520, alignment: .leading)
                     .id(blurb)
@@ -308,7 +314,7 @@ private struct PhotoMetadataCard: View {
                 .allowsHitTesting(false)
         }
         .glassEffect(
-            .regular.tint(isDarkBackdrop ? .black.opacity(0.22) : .white.opacity(0.26)),
+            .regular.tint(isDarkBackdrop ? .black.opacity(0.38) : .white.opacity(0.48)),
             in: RoundedRectangle(cornerRadius: 22, style: .continuous)
         )
         .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 4)

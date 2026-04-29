@@ -30,7 +30,7 @@ struct WidgetPayload: Codable, Sendable {
     var tags: [String]?
     var hexColor: String?
 
-    static let appGroup = "group.ep.paperpaper"
+    static let appGroup = "group.me.ethanpan.paperpaper"
     static let defaultsKey = "widget.payload"
 
     static func containerURL() -> URL? {

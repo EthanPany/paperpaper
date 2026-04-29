@@ -27,9 +27,9 @@ struct WidgetPayload: Codable, Sendable {
     var tags: [String]?
     var hexColor: String?
 
-    static let appGroup = "group.ep.paperpaper"
+    static let appGroup = "group.me.ethanpan.paperpaper"
     static let defaultsKey = "widget.payload"
-    private static let log = Logger(subsystem: "ep.paperpaper", category: "widget-sync")
+    private static let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "widget-sync")
     private static let breadcrumbName = "last_read.json"
 
     static func containerURL() -> URL? {

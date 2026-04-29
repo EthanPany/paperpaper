@@ -4,7 +4,7 @@ import os
 import AppKit
 #endif
 
-private let ollamaLog = Logger(subsystem: "ep.paperpaper", category: "ollama")
+private let ollamaLog = Logger(subsystem: "me.ethanpan.paperpaper", category: "ollama")
 
 /// Compact summary of a JSON body for logging — replaces long strings (image
 /// base64) with "<n bytes>" markers so we can see the structure without

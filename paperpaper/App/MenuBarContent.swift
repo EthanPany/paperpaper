@@ -106,7 +106,7 @@ struct MenuBarContent: View {
                 WallpaperApplier.shared.logWidgetPayloadForDiagnostics()
             }
             .buttonStyle(.borderless)
-            .help("Rewrite the widget payload and force a reload. Check Console.app for `subsystem:ep.paperpaper` to inspect.")
+            .help("Rewrite the widget payload and force a reload. Check Console.app for `subsystem:me.ethanpan.paperpaper` to inspect.")
 
             if engine.isRunning {
                 Button("Pause", systemImage: "pause") {
@@ -157,6 +157,8 @@ private struct WallpaperPreview: View {
                 image
                     .resizable()
                     .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             } else {
                 LinearGradient(
                     colors: [

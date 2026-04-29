@@ -31,7 +31,7 @@ final class iCloudSyncCoordinator {
     static let shared = iCloudSyncCoordinator()
 
     @ObservationIgnored
-    private let log = Logger(subsystem: "ep.paperpaper", category: "icloud-sync")
+    private let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "icloud-sync")
     @ObservationIgnored
     private let kvs = NSUbiquitousKeyValueStore.default
     @ObservationIgnored

@@ -10,7 +10,7 @@ enum KeychainKey: String {
 final class KeychainService {
     static let shared = KeychainService()
 
-    private let service = "ep.paperpaper"
+    private let service = "me.ethanpan.paperpaper"
 
     func set(_ value: String, for key: KeychainKey, syncable: Bool = false) {
         let data = Data(value.utf8)

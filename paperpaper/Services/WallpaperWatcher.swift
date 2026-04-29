@@ -13,7 +13,7 @@ import AppKit
 final class WallpaperWatcher {
     static let shared = WallpaperWatcher()
 
-    private let log = Logger(subsystem: "ep.paperpaper", category: "wallpaper-watcher")
+    private let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "wallpaper-watcher")
 
     #if os(macOS)
     private var spaceToken: NSObjectProtocol?

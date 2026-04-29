@@ -7,7 +7,7 @@ import AppKit
 
 @main
 struct paperpaperApp: App {
-    private static let log = Logger(subsystem: "ep.paperpaper", category: "app-lifecycle")
+    private static let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "app-lifecycle")
 
     @Environment(\.openWindow) private var openWindow
     #if os(macOS)

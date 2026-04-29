@@ -84,3 +84,13 @@ Config.local.xcconfig
 
 # Personal notes (not part of the project)
 Project BREW.md
+
+
+# Agent / IDE state (not source)
+.blitz/
+.agents/
+.codex/
+.claude/
+.mcp.json
+opencode.json
+CLAUDE.md

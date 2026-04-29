@@ -25,7 +25,7 @@ final class WallpaperApplier {
     var lastEnrichmentAt: Date?
 
     @ObservationIgnored
-    private let log = Logger(subsystem: "ep.paperpaper", category: "widget-sync")
+    private let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "widget-sync")
 
     /// Set while apply()/reapply() is mid-flight. WallpaperWatcher reads this
     /// to skip its poll-based sync — otherwise a 30s tick or activeSpace
@@ -233,7 +233,7 @@ final class WallpaperApplier {
 
     /// Dumps the current on-disk widget payload field-by-field to the unified
     /// log. Hooked to a "Refresh widget" menu-bar button. Use Console.app with
-    /// `subsystem:ep.paperpaper category:widget-sync` to inspect — this is the
+    /// `subsystem:me.ethanpan.paperpaper category:widget-sync` to inspect — this is the
     /// fastest way to disambiguate "WidgetKit isn't refreshing" from "the
     /// payload is empty so there's nothing to render."
     func logWidgetPayloadForDiagnostics() {
@@ -417,6 +417,15 @@ final class WallpaperApplier {
         // - If the agent returned nil (Ollama unreachable / errored): leave
         //   every field blank.
         let confirmed = await ArchitectureAgent.confirm(for: photo, imageFileURL: imageURL)
+        // Only mark enrichedAt when the agent actually produced something
+        // usable. A failed run (nil, or empty blurbs) leaves enrichedAt nil
+        // so the next `enrichIfNeeded` call — from preCache on the next app
+        // open, or from `kickOffEnrichmentIfMissing` when the user rotates
+        // back to this photo — re-runs the agent. Overlap is fine; the
+        // per-photo `enrichmentTasks` dict deduplicates concurrent calls.
+        let succeeded = (confirmed?.oneSentence?.isEmpty == false)
+            || (confirmed?.blurbMedium?.isEmpty == false)
+            || (confirmed?.blurbLong?.isEmpty == false)
         if let confirmed {
             // Keep the building name whenever the agent committed a real
             // (non-placeholder) name. makeConfirmed assigns "—" when it had
@@ -450,17 +459,19 @@ final class WallpaperApplier {
             enrichment.blurbMedium = nil
             enrichment.blurbLong = nil
         }
-        enrichment.enrichedAt = .now
+        if succeeded {
+            enrichment.enrichedAt = .now
+        }
         try? Store.shared.context.save()
-        log.info("enrichment ready for \(photo.unsplashID, privacy: .public) building=\(enrichment.buildingName ?? "-", privacy: .public) sentence=\(enrichment.oneSentence ?? "-", privacy: .public)")
+        log.info("enrichment \(succeeded ? "ready" : "deferred (no commit, will retry)", privacy: .public) for \(photo.unsplashID, privacy: .public) building=\(enrichment.buildingName ?? "-", privacy: .public) sentence=\(enrichment.oneSentence ?? "-", privacy: .public)")
 
         // Surface a one-liner in the Connections tab so users don't have to
         // open Console.app to know whether the agent succeeded.
-        if let confirmed = confirmed {
+        if succeeded, let confirmed {
             let label = enrichment.buildingName ?? confirmed.name
             lastEnrichmentStatus = "Succeeded — \(label)"
         } else {
-            lastEnrichmentStatus = "No commit — check Ollama and the model"
+            lastEnrichmentStatus = "No commit — will retry on next view"
         }
         lastEnrichmentAt = .now
 
@@ -665,9 +676,9 @@ final class WallpaperApplier {
             log.error("copy source missing: \(sourceFile.path, privacy: .public)")
             return ""
         }
-        // Bundle ID changes in DEBUG (we ship as ep.paperpaper2 right now)
+        // Bundle ID changes in DEBUG (we ship as me.ethanpan.paperpaper right now)
         // leave images in older sandbox containers (e.g. ~/Library/Containers/
-        // ep.paperpaper/...) that the current sandbox can't read. Detect that
+        // me.ethanpan.paperpaper/...) that the current sandbox can't read. Detect that
         // up front so we don't fall through to a copyItem failure that floods
         // the log on every WallpaperWatcher tick.
         if !fm.isReadableFile(atPath: sourceFile.path) {

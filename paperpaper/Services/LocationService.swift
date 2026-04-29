@@ -25,7 +25,7 @@ final class LocationService: NSObject {
         var queryHint: String? { displayName.trimmedNonEmpty }
     }
 
-    private let log = Logger(subsystem: "ep.paperpaper", category: "location")
+    private let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "location")
     private let manager = CLLocationManager()
     private var pending: CheckedContinuation<CLLocation?, Never>?
 

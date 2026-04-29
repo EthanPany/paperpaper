@@ -4,7 +4,7 @@ import os
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let log = Logger(subsystem: "ep.paperpaper", category: "menubar")
+    private let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "menubar")
 
     private var windowDidBecomeMainObserver: NSObjectProtocol?
     private var windowWillCloseObserver: NSObjectProtocol?
@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: 28)
         item.behavior = [.removalAllowed]
-        item.autosaveName = "ep.paperpaper.menubar"
+        item.autosaveName = "me.ethanpan.paperpaper.menubar"
         item.isVisible = true
         if let button = item.button {
             let image = NSImage(systemSymbolName: "photo.stack.fill", accessibilityDescription: "paperpaper")
@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }))
         self.popover = popover
 
-        log.notice("installed AppKit NSStatusItem with autosaveName=ep.paperpaper.menubar")
+        log.notice("installed AppKit NSStatusItem with autosaveName=me.ethanpan.paperpaper.menubar")
     }
 
     @objc private func statusItemClicked(_ sender: Any?) {

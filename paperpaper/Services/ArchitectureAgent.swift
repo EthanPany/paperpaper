@@ -25,7 +25,7 @@ import MapKit
 /// model unable to commit). Caller treats nil as "leave fields blank".
 @MainActor
 enum ArchitectureAgent {
-    private static let log = Logger(subsystem: "ep.paperpaper", category: "arch-agent")
+    private static let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "arch-agent")
     private static let maxIterations = 4
 
     struct Confirmed: Sendable {
@@ -257,6 +257,22 @@ enum ArchitectureAgent {
            • location = surrounding geographic context, "Anchor, City, Country"
              ("DUMBO, Brooklyn, NY, USA", "Eixample, Barcelona, Spain").
              They MUST be different strings. Never put a city in building_name.
+
+        2a) STOREFRONTS / CHAIN BRANDS ARE NOT THE SUBJECT — UNLESS THE BUILDING IS.
+           A "Chase" sign on a podium is just a tenant. "Apple Store" on a
+           glass cube IS the subject. Decide by what dominates the frame:
+             • If the photo is a STREET / BLOCK / SQUARE and a chain logo
+               is just one of many storefronts → building_name = null,
+               location = the street or district name (e.g. "Lexington Ave,
+               Midtown Manhattan, NY, USA").
+             • If the photo is a SINGLE BRANDED BUILDING that is itself
+               iconic (e.g. the Apple Fifth Avenue cube, Chase Tower in
+               Houston, the Coca-Cola HQ) → building_name = that named
+               building. The brand IS the subject only when the building
+               is custom-built around it or independently famous.
+           When in doubt, prefer the street / district as location and
+           leave building_name null. "Chase Bank" alone is almost always
+           the wrong answer.
 
         3) location IS REQUIRED and must reach district granularity when possible.
            Use mapkit_search if the EXIF area is too vague (e.g. just "Spain").
@@ -630,20 +646,31 @@ enum ArchitectureAgent {
         let blurbLong = trimmed(args.blurb_long)
         let oneSentence = blurbShort
         var bldg = trimmed(args.building_name)
-        let location = trimmed(args.location)
+        var location = trimmed(args.location)
         // Defensive: even with the schema saying "building_name and location
-        // must differ," small models occasionally return the same string in
-        // both — or stuff a city name into building_name. Reject any bldg
-        // that's a prefix-equal/contained-in match against location, since
-        // that's a tell that the model fell back to "this is just a place,
-        // not a specific subject." Drops bldg → nil → bestPlaceTitle falls
-        // back to location, no double-printing in the UI.
+        // must differ," small models often stuff the same building name into
+        // both. Two cases:
+        //   (a) Identical strings → drop bldg (no real subject claim).
+        //   (b) location starts with "<bldg>, City, Country" → strip the
+        //       leading bldg from location so we keep the building AND a
+        //       clean geographic anchor. Without this, the over-eager prefix
+        //       match was throwing away valid building names like "One World
+        //       Trade Center" because the model echoed it into location.
         if let b = bldg, let l = location {
             let bLow = b.lowercased()
             let lLow = l.lowercased()
-            if bLow == lLow || lLow.hasPrefix(bLow) || bLow.hasPrefix(lLow.split(separator: ",").first.map(String.init)?.lowercased() ?? "") {
-                log.info("agent: dropping building_name=\(b, privacy: .public) (overlaps location=\(l, privacy: .public))")
+            if bLow == lLow {
+                log.info("agent: dropping building_name=\(b, privacy: .public) (identical to location)")
                 bldg = nil
+            } else if lLow.hasPrefix(bLow + ",") || lLow.hasPrefix(bLow + " ,") {
+                let remainder = String(l.dropFirst(b.count))
+                let cleaned = remainder
+                    .drop(while: { $0 == "," || $0 == " " })
+                let trimmedRemainder = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedRemainder.isEmpty {
+                    location = trimmedRemainder
+                    log.info("agent: stripped building prefix from location → \(trimmedRemainder, privacy: .public)")
+                }
             }
         }
         // With a name → full enrichment. Without → use the placeholder; the
