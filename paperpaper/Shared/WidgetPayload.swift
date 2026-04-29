@@ -85,3 +85,51 @@ struct WidgetPayload: Codable, Sendable {
         try data.write(to: Self.payloadFileURL(), options: .atomic)
     }
 }
+
+// MARK: - Display helpers
+//
+// The widget extension keeps its own copy of these helpers (they're private
+// to that target). We mirror them here in the main-app target so views like
+// MenuBarContent and NowView can display the same titles / footers without
+// reaching into the widget bundle.
+
+extension String {
+    fileprivate var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+extension WidgetPayload {
+    /// The big, front-and-center place name. Always a *place*: building,
+    /// city, or region. Never a description of photo content.
+    var bestTitle: String {
+        if let n = buildingName?.nilIfEmpty { return n }
+        if let first = locationComponents.first, !first.isEmpty { return first }
+        if let c = locationCity?.nilIfEmpty { return c }
+        if let area = area.nilIfEmpty { return area }
+        if let country = locationCountry?.nilIfEmpty { return country }
+        if let firstTag = tags?.first?.nilIfEmpty { return firstTag.capitalized }
+        return "Wallpaper"
+    }
+
+    /// Secondary location line. Only when it adds info beyond `bestTitle`.
+    var bestFooter: String? {
+        if locationComponents.count > 1 {
+            let remainder = locationComponents.dropFirst().joined(separator: ", ")
+            if !remainder.isEmpty, remainder != bestTitle { return remainder }
+        }
+        if let city = locationCity?.nilIfEmpty, let country = locationCountry?.nilIfEmpty, city != bestTitle {
+            return "\(city), \(country)"
+        }
+        if let area = area.nilIfEmpty, area != bestTitle { return area }
+        if let loc = locationName?.nilIfEmpty, loc != bestTitle { return loc }
+        if let country = locationCountry?.nilIfEmpty, country != bestTitle { return country }
+        return nil
+    }
+
+    private var locationComponents: [String] {
+        guard let raw = locationName?.nilIfEmpty else { return [] }
+        return raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+}

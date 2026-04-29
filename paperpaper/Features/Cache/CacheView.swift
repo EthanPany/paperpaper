@@ -1,14 +1,10 @@
 import SwiftUI
 
-/// Combined Data tab: cache + sync in one place.
+/// Data tab: just the cache pane. Sync used to live here too, but it's now
+/// a top-level Settings tab.
 struct DataView: View {
     var body: some View {
-        TabView {
-            CachePane()
-                .tabItem { Label("Cache", systemImage: "externaldrive") }
-            SyncPane()
-                .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath.icloud") }
-        }
+        CachePane()
     }
 }
 

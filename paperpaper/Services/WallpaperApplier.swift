@@ -721,14 +721,8 @@ final class WallpaperApplier {
         guard let latest = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }),
               latest.unsplashID == photo.unsplashID else { return }
 
-        let style = Store.shared.overlay()
         let raw = ImageCache.shared.fileURL(for: photo.unsplashID)
-        let overlay = ImageCache.shared.dir.appending(path: "\(photo.unsplashID).overlay.jpg")
-        let preferred: URL = {
-            if style.enabled, FileManager.default.fileExists(atPath: overlay.path) { return overlay }
-            return raw
-        }()
-        writeWidgetPayload(for: photo, file: preferred, forceReload: forceReload)
+        writeWidgetPayload(for: photo, file: raw, forceReload: forceReload)
     }
 
     private func enforceCacheCap() {
