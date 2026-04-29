@@ -79,12 +79,16 @@ struct NowView: View {
                     Task { await WallpaperApplier.shared.regenerateMostRecent() }
                 } label: {
                     if applier.isEnriching {
-                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.6)
+                            .tint(.secondary)
                     } else {
                         Image(systemName: "sparkles")
                     }
                 }
-                .help(applier.isEnriching ? "Regenerating AI info…" : "Regenerate AI info — re-run the architecture agent on the current photo")
+                .foregroundStyle(applier.isEnriching ? .secondary : .primary)
+                .help(applier.isEnriching ? "Generating AI info…" : "Regenerate AI info — re-run the architecture agent on the current photo")
                 .disabled(current == nil || applier.isEnriching)
 
                 if let photo = current {
@@ -198,6 +202,17 @@ private struct PhotoMetadataCard: View {
     private var tertiaryTextColor: Color { isDarkBackdrop ? .white.opacity(0.78) : Color(white: 0.30) }
     private var textShadowColor: Color { isDarkBackdrop ? .black.opacity(0.45) : .white.opacity(0.35) }
 
+    /// Prefer the medium blurb (richer 2-3 sentence intro) when the agent
+    /// produced one; fall back to oneSentence so old enrichments and partial
+    /// commits still render something.
+    private var blurbText: String? {
+        let medium = photo.enrichment?.blurbMedium?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let medium, !medium.isEmpty { return medium }
+        let one = photo.enrichment?.oneSentence?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let one, !one.isEmpty { return one }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
@@ -206,22 +221,36 @@ private struct PhotoMetadataCard: View {
                     .foregroundStyle(primaryTextColor)
                     .shadow(color: textShadowColor, radius: 3, x: 0, y: 1)
                     .lineLimit(2)
+                    // contentTransition.numericText animates each glyph as the
+                    // text changes — so when enrichment lands and the title
+                    // flips from "New York, USA" → "One World Trade Center"
+                    // the change rolls in instead of cutting.
+                    .contentTransition(.numericText())
+                    .animation(.easeInOut(duration: 0.35), value: title)
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(secondaryTextColor)
                         .shadow(color: textShadowColor, radius: 2, x: 0, y: 1)
                         .lineLimit(1)
+                        .contentTransition(.numericText())
+                        .animation(.easeInOut(duration: 0.35), value: subtitle)
                 }
             }
 
-            if let blurb = photo.enrichment?.oneSentence, !blurb.isEmpty {
+            if let blurb = blurbText {
                 Text(blurb)
                     .font(.callout)
                     .foregroundStyle(secondaryTextColor)
                     .shadow(color: textShadowColor, radius: 2, x: 0, y: 1)
-                    .lineLimit(3)
+                    .lineLimit(5)
                     .frame(maxWidth: 520, alignment: .leading)
+                    .id(blurb)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity
+                    ))
+                    .animation(.easeInOut(duration: 0.4), value: blurb)
             }
 
             if let metaLine, !metaLine.isEmpty {

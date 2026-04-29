@@ -86,11 +86,15 @@ struct MenuBarContent: View {
             } label: {
                 HStack(spacing: 6) {
                     if applier.isEnriching {
-                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                            .tint(.secondary)
                     } else {
                         Image(systemName: "sparkles")
                     }
-                    Text(applier.isEnriching ? "Regenerating AI info…" : "Regenerate AI info")
+                    Text(applier.isEnriching ? "Generating AI info…" : "Regenerate AI info")
+                        .foregroundStyle(applier.isEnriching ? .secondary : .primary)
                 }
             }
             .buttonStyle(.borderless)

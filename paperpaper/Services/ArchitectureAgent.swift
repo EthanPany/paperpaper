@@ -467,36 +467,81 @@ enum ArchitectureAgent {
     }
 
     /// Lenient parse of a `commit_enrichment` arg dict. Small models routinely
-    /// stringify numbers ("2013.0" instead of 2013) or wrap nullable fields in
-    /// arrays / NSNull. Decoding via Codable throws on any of those and drops
-    /// the whole commit — so we walk the dict by hand and coerce per field.
+    /// stringify numbers ("2013.0" instead of 2013), wrap nullable fields in
+    /// arrays / NSNull, and (the qwen3-vl 2B model especially) invent their
+    /// own field names: building_address, building_description,
+    /// short_description, etc. We walk by hand and coerce per field, with
+    /// alias fall-throughs so a "wrong shape but right info" commit still
+    /// lands instead of flat-failing.
     private static func parseCommitArgs(_ obj: [String: Any]) -> CommitArgs {
-        func str(_ key: String) -> String? {
-            if let s = obj[key] as? String { return s }
-            if let n = obj[key] as? NSNumber { return n.stringValue }
-            return nil
-        }
-        func int(_ key: String) -> Int? {
-            if let n = obj[key] as? Int { return n }
-            if let d = obj[key] as? Double { return Int(d) }
-            if let s = obj[key] as? String {
-                if let i = Int(s) { return i }
-                if let d = Double(s) { return Int(d) }
+        func str(_ keys: String...) -> String? {
+            for key in keys {
+                if let s = obj[key] as? String { return s }
+                if let n = obj[key] as? NSNumber { return n.stringValue }
             }
             return nil
         }
+        func int(_ keys: String...) -> Int? {
+            for key in keys {
+                if let n = obj[key] as? Int { return n }
+                if let d = obj[key] as? Double { return Int(d) }
+                if let s = obj[key] as? String {
+                    if let i = Int(s) { return i }
+                    if let d = Double(s) { return Int(d) }
+                }
+            }
+            return nil
+        }
+
+        // "Unknown" / "null" / "n/a" are the model saying "I don't know" but
+        // disobeying our null contract. Treat them as null so they don't get
+        // surfaced verbatim in the widget.
+        func clean(_ s: String?) -> String? {
+            guard let s else { return nil }
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            let low = t.lowercased()
+            if t.isEmpty { return nil }
+            if ["unknown", "n/a", "null", "none", "not applicable", "tbd"].contains(low) { return nil }
+            return t
+        }
+
+        // blurb_* fall-throughs accept the most common alias names we've
+        // observed the model invent (building_description, description,
+        // short_description, etc).
+        let descAlias = str("building_description", "description", "summary")
+        let shortAlias = str("blurb_short", "short_description", "one_sentence")
+            ?? descAlias.flatMap(firstSentence(of:))
+        let mediumAlias = str("blurb_medium", "medium_description", "caption") ?? descAlias
+        let longAlias = str("blurb_long", "long_description", "long") ?? descAlias
+
+        // location fall-through accepts building_address as a last resort —
+        // it's wrong granularity but better than nothing for "agent loop ended
+        // without commit" cases.
+        let location = str("location") ?? str("area") ?? str("building_address", "address")
+
         return CommitArgs(
-            building_name: str("building_name"),
-            architect: str("architect"),
+            building_name: clean(str("building_name", "building")),
+            architect: clean(str("architect")),
             year: int("year"),
-            style: str("style"),
-            location: str("location"),
-            blurb_short: str("blurb_short"),
-            blurb_medium: str("blurb_medium"),
-            blurb_long: str("blurb_long"),
-            one_sentence: str("one_sentence"),
-            confidence: str("confidence")
+            style: clean(str("style", "architectural_style")),
+            location: location,
+            blurb_short: shortAlias,
+            blurb_medium: mediumAlias,
+            blurb_long: longAlias,
+            one_sentence: shortAlias,
+            confidence: str("confidence") ?? "low"
         )
+    }
+
+    /// Best-effort first-sentence extractor for synthesizing a blurb_short
+    /// from a longer description.
+    private static func firstSentence(of text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let end = trimmed.firstIndex(where: { ".!?".contains($0) }) {
+            return String(trimmed[..<trimmed.index(after: end)])
+        }
+        return trimmed
     }
 
     private static func decodeCommit(_ args: AnyJSON?) -> Confirmed? {

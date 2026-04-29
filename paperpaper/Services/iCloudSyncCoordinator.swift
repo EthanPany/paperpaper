@@ -97,9 +97,20 @@ final class iCloudSyncCoordinator {
     }
 
     /// Wire up KVS observation and pull the current snapshot. Safe to call
-    /// repeatedly — second + subsequent calls no-op.
+    /// repeatedly — second + subsequent calls no-op. If the KVS entitlement
+    /// is missing we log once and leave isEnabled false so the rest of the
+    /// app keeps working without sync.
     func start() {
         guard observerToken == nil else { return }
+        // KVS .synchronize() returns false when the entitlement is missing
+        // ("BUG IN CLIENT OF KVS: Trying to initialize NSUbiquitousKeyValueStore
+        //  without a store identifier"). Detect once and disable cleanly
+        // instead of letting every publish call hit the same warning.
+        guard kvs.synchronize() else {
+            log.error("iCloud KVS unavailable — check the ubiquity-kvstore-identifier entitlement. Sync disabled.")
+            isEnabled = false
+            return
+        }
         observerToken = NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: kvs,
@@ -107,7 +118,6 @@ final class iCloudSyncCoordinator {
         ) { [weak self] note in
             Task { @MainActor in self?.handleExternalChange(note) }
         }
-        kvs.synchronize()
         refreshLocalStateFromKVS()
         if isEnabled { claimPrimaryIfUnclaimed() }
     }

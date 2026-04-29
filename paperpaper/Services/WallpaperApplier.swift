@@ -344,19 +344,23 @@ final class WallpaperApplier {
             await self?.runEnrichment(photo)
         }
         enrichmentTasks[id] = task
+        // isEnriching tracks ANY in-flight enrichment, regardless of who
+        // triggered it. Auto-runs from preCache or rotation flip the same
+        // flag the regenerate button reads, so the UI shows a spinner during
+        // background work — no separate "is auto-running" state needed.
+        isEnriching = true
         lastEnrichmentTask = task
         await task.value
-        // Keep `lastEnrichmentTask` pointing at the latest launched task so
-        // newcomers serialise behind it; just clear our per-photo slot.
         enrichmentTasks.removeValue(forKey: id)
+        isEnriching = !enrichmentTasks.isEmpty
     }
 
     /// User-initiated re-enrichment. Wipes the existing enrichment record so
     /// the next pass actually re-asks Ollama (enrichIfNeeded is otherwise a
     /// no-op on already-enriched photos).
     func regenerateEnrichment(for photo: Photo) async {
-        isEnriching = true
-        defer { isEnriching = false }
+        // isEnriching is owned by enrichIfNeeded now — it sets/clears
+        // the flag whenever any task is in flight, regardless of trigger.
         if let existing = photo.enrichment {
             existing.enrichedAt = nil
             existing.buildingName = nil
@@ -675,6 +679,15 @@ final class WallpaperApplier {
         let destination = dir.appending(path: name)
         if !fm.fileExists(atPath: sourceFile.path) {
             log.error("copy source missing: \(sourceFile.path, privacy: .public)")
+            return ""
+        }
+        // Bundle ID changes in DEBUG (we ship as ep.paperpaper2 right now)
+        // leave images in older sandbox containers (e.g. ~/Library/Containers/
+        // ep.paperpaper/...) that the current sandbox can't read. Detect that
+        // up front so we don't fall through to a copyItem failure that floods
+        // the log on every WallpaperWatcher tick.
+        if !fm.isReadableFile(atPath: sourceFile.path) {
+            log.info("copy source not readable from this sandbox (likely stale container): \(sourceFile.path, privacy: .public)")
             return ""
         }
         // ROOT CAUSE of recurring "you don't have permission to access widget"
