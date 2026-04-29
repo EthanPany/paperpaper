@@ -72,6 +72,7 @@ struct SourceView: View {
 /// Intelligence — Ollama + Search Agent. All AI-related settings.
 struct IntelligenceView: View {
     @State private var ollamaAPIKey: String = ""
+    @State private var applier = WallpaperApplier.shared
     @AppStorage("ollama.url") private var ollamaURL: String = "http://localhost:11434"
     @AppStorage("ollama.model") private var ollamaModel: String = "llama3.2"
     @AppStorage("ollama.temperature") private var ollamaTemperature: Double = 0.3
@@ -166,6 +167,24 @@ struct IntelligenceView: View {
                     Label(modelsError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                }
+                if let status = applier.lastEnrichmentStatus {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: status.hasPrefix("Succeeded") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            .foregroundStyle(status.hasPrefix("Succeeded") ? .green : .orange)
+                            .font(.caption)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Last enrichment: \(status)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            if let at = applier.lastEnrichmentAt {
+                                Text(at.formatted(.relative(presentation: .named)))
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
                 }
             }
 

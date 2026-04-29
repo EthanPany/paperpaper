@@ -13,6 +13,17 @@ struct UnsplashPhoto: Decodable, Sendable, Identifiable {
     let location: Location?
     let tags: [Tag]?
     let exif: Exif?
+    /// Unsplash returns `links.download_location` for every photo. Per the
+    /// Unsplash API guidelines this URL must be hit (with the access key) any
+    /// time we "trigger a download" — applying as a wallpaper counts. We use
+    /// it from `UnsplashService.trackDownload`.
+    let links: PhotoLinks?
+
+    struct PhotoLinks: Decodable, Sendable {
+        let html: URL?
+        let download: URL?
+        let download_location: URL?
+    }
 
     struct URLs: Decodable, Sendable {
         let raw: URL
@@ -121,6 +132,22 @@ final class UnsplashService {
             URLQueryItem(name: "content_filter", value: "high"),
         ]
         return try await get(comps.url!)
+    }
+
+    /// Tells Unsplash that a photo was "downloaded" (in our case: applied as
+    /// wallpaper). Required by the Unsplash API guidelines whenever the user
+    /// triggers a download — without it, our app key gets rate-limited and
+    /// can be revoked. The endpoint is the value of `photo.links.download_location`
+    /// and must be called with our standard auth header. We don't care about
+    /// the response body; failure is logged but swallowed so a transient
+    /// network blip never blocks a wallpaper apply.
+    func trackDownload(_ photo: UnsplashPhoto) async {
+        guard let location = photo.links?.download_location else { return }
+        guard let key = KeychainService.shared.get(.unsplashAccessKey), !key.isEmpty else { return }
+        var req = URLRequest(url: location)
+        req.setValue("Client-ID \(key)", forHTTPHeaderField: "Authorization")
+        req.setValue("v1", forHTTPHeaderField: "Accept-Version")
+        _ = try? await session.data(for: req)
     }
 
     func download(_ url: URL) async throws -> Data {

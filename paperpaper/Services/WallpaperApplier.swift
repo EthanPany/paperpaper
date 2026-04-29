@@ -18,6 +18,11 @@ final class WallpaperApplier {
     /// Bound to spinners in NowView and MenuBarContent so the user sees
     /// the click registered (Ollama enrichment can take 5–30s).
     var isEnriching: Bool = false
+    /// Surfaced in Connections so users can see the most recent enrichment
+    /// outcome without opening Console.app. Updated at the tail of every
+    /// runEnrichment call.
+    var lastEnrichmentStatus: String?
+    var lastEnrichmentAt: Date?
 
     @ObservationIgnored
     private let log = Logger(subsystem: "ep.paperpaper", category: "widget-sync")
@@ -70,6 +75,11 @@ final class WallpaperApplier {
         // Broadcast to other iCloud devices when this Mac is the primary.
         // Coordinator no-ops if sync is disabled or another Mac is primary.
         iCloudSyncCoordinator.shared.publishPhotoApplied(unsplashID: photo.unsplashID)
+
+        // Unsplash API TOS: hit `links.download_location` whenever we trigger
+        // a download (applying as wallpaper qualifies). Fire-and-forget; a
+        // network blip here mustn't block the apply.
+        Task { await UnsplashService.shared.trackDownload(unsplash) }
 
         enforceCacheCap()
         return photo
@@ -446,6 +456,17 @@ final class WallpaperApplier {
         enrichment.enrichedAt = .now
         try? Store.shared.context.save()
         log.info("enrichment ready for \(photo.unsplashID, privacy: .public) building=\(enrichment.buildingName ?? "-", privacy: .public) sentence=\(enrichment.oneSentence ?? "-", privacy: .public)")
+
+        // Surface a one-liner in the Connections tab so users don't have to
+        // open Console.app to know whether the agent succeeded.
+        if let confirmed = confirmed {
+            let label = enrichment.buildingName ?? confirmed.name
+            lastEnrichmentStatus = "Succeeded — \(label)"
+        } else {
+            lastEnrichmentStatus = "No commit — check Ollama and the model"
+        }
+        lastEnrichmentAt = .now
+
         rewriteWidgetPayloadIfCurrent(photo, forceReload: true)
     }
 

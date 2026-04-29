@@ -114,6 +114,15 @@ final class RotationEngine {
     }
 
     private func rotate() async {
+        // First-run gate: refuse to rotate without an Unsplash key. The
+        // search call below would fail anyway, but it would do so on every
+        // schedule tick — burning network and cluttering Console logs.
+        // Surface a clear lastError instead so the menu bar status pill turns
+        // red and the user knows where to go.
+        guard let key = KeychainService.shared.get(.unsplashAccessKey), !key.isEmpty else {
+            lastError = "Add an Unsplash Access Key in Settings → Connections."
+            return
+        }
         do {
             let rule = Store.shared.rule()
             let filters = Store.shared.filters()
