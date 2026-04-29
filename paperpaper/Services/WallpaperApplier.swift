@@ -243,7 +243,7 @@ final class WallpaperApplier {
         }
         log.info("DIAG payload id=\(payload.unsplashID, privacy: .public) image=\(payload.imageFileName, privacy: .public)")
         log.info("DIAG title-chain building=\(payload.buildingName ?? "-", privacy: .public) photoDesc=\(payload.photoDescription ?? "-", privacy: .public) alt=\(payload.altDescription ?? "-", privacy: .public) area=\(payload.area, privacy: .public) loc=\(payload.locationName ?? "-", privacy: .public)")
-        log.info("DIAG enrichment architect=\(payload.architect ?? "-", privacy: .public) year=\(payload.year ?? -1) sentence=\(payload.oneSentence ?? "-", privacy: .public)")
+        log.info("DIAG enrichment building=\(payload.buildingName ?? "-", privacy: .public) short=\(payload.blurbShort ?? payload.oneSentence ?? "-", privacy: .public)")
         log.info("DIAG exif camera=\(payload.cameraLine ?? "-", privacy: .public) lens=\(payload.lensLine ?? "-", privacy: .public) shot=\(payload.shotLine ?? "-", privacy: .public)")
         if let url = payload.resolvedImageURL() {
             let exists = FileManager.default.fileExists(atPath: url.path)
@@ -364,9 +364,6 @@ final class WallpaperApplier {
         if let existing = photo.enrichment {
             existing.enrichedAt = nil
             existing.buildingName = nil
-            existing.architect = nil
-            existing.year = nil
-            existing.style = nil
             existing.oneSentence = nil
             existing.blurbShort = nil
             existing.blurbMedium = nil
@@ -422,23 +419,15 @@ final class WallpaperApplier {
         let confirmed = await ArchitectureAgent.confirm(for: photo, imageFileURL: imageURL)
         if let confirmed {
             // Keep the building name whenever the agent committed a real
-            // (non-placeholder) name. The previous heuristic also required
-            // architect / year / style to be non-nil, which threw away every
-            // name the model identified without metadata — qwen3-vl
-            // produced "The Landmark Tavern" with no architect/year and we
-            // dropped it. makeConfirmed assigns "—" when it had no name at
-            // all, so that's the only case we still drop.
+            // (non-placeholder) name. makeConfirmed assigns "—" when it had
+            // no name, so that's the only case we drop.
             let trimmedName = confirmed.name.trimmingCharacters(in: .whitespaces)
             let hasName = trimmedName != "—" && !trimmedName.isEmpty
             enrichment.buildingName = hasName ? confirmed.name : nil
-            enrichment.architect = confirmed.architect
-            enrichment.year = confirmed.year
-            enrichment.style = confirmed.style
             enrichment.oneSentence = confirmed.oneSentence
             enrichment.blurbShort = confirmed.oneSentence
             enrichment.blurbMedium = confirmed.blurbMedium
             enrichment.blurbLong = confirmed.blurbLong
-            enrichment.confidence = hasName ? .building : .areaOnly
             enrichment.modelUsed = UserDefaults.standard.string(forKey: "ollama.model")
 
             // Adopt the agent's specific location string when Unsplash gave
@@ -456,14 +445,10 @@ final class WallpaperApplier {
             }
         } else {
             enrichment.buildingName = nil
-            enrichment.architect = nil
-            enrichment.year = nil
-            enrichment.style = nil
             enrichment.oneSentence = nil
             enrichment.blurbShort = nil
             enrichment.blurbMedium = nil
             enrichment.blurbLong = nil
-            enrichment.confidence = .areaOnly
         }
         enrichment.enrichedAt = .now
         try? Store.shared.context.save()
@@ -524,9 +509,6 @@ final class WallpaperApplier {
             unsplashID: photo.unsplashID,
             imageFileName: imageFileName,
             buildingName: photo.enrichment?.buildingName,
-            architect: photo.enrichment?.architect,
-            year: photo.enrichment?.year,
-            style: photo.enrichment?.style,
             oneSentence: photo.enrichment?.oneSentence,
             blurbShort: photo.enrichment?.blurbShort ?? photo.enrichment?.oneSentence,
             blurbMedium: photo.enrichment?.blurbMedium,
@@ -571,9 +553,6 @@ final class WallpaperApplier {
             unsplashID: id,
             imageFileName: imageFileName,
             buildingName: nil,
-            architect: nil,
-            year: nil,
-            style: nil,
             oneSentence: nil,
             blurbShort: nil,
             blurbMedium: nil,
@@ -641,9 +620,6 @@ final class WallpaperApplier {
         return existing.unsplashID == candidate.unsplashID
             && existing.imageFileName == candidate.imageFileName
             && existing.buildingName == candidate.buildingName
-            && existing.architect == candidate.architect
-            && existing.year == candidate.year
-            && existing.style == candidate.style
             && existing.oneSentence == candidate.oneSentence
             && existing.blurbShort == candidate.blurbShort
             && existing.blurbMedium == candidate.blurbMedium

@@ -465,27 +465,17 @@ private struct ModeContent {
 
     private static func architectureContent(payload: WidgetPayload, family: WidgetFamily) -> ModeContent {
         // Architecture mode: prefer building name as title; if enrichment
-        // returned nothing (low confidence), bestTitle already falls back to
-        // city / area, so we degrade gracefully into "place mode" without a
-        // separate code path.
+        // returned nothing, bestTitle falls back to city / area, so we
+        // degrade gracefully into "place mode" without a separate code path.
+        // Architect / year / style aren't separate fields anymore — they
+        // live inside the blurb prose, which is what the caption renders.
         let title = payload.bestTitle
         let eyebrow = payload.bestEyebrow
 
         var rows: [Row] = []
-        if let style = payload.style?.nilIfEmpty {
-            rows.append(Row(label: "Style", value: style, mono: false))
-        }
-        if let year = payload.year {
-            rows.append(Row(label: "Year", value: "\(year)", mono: false))
-        }
         if let location = payload.bestFooter ?? payload.area.nilIfEmpty {
             rows.append(Row(label: "Location", value: location, mono: false))
         }
-        if let architect = payload.architect?.nilIfEmpty {
-            rows.append(Row(label: "Architect", value: architect, mono: false))
-        }
-
-        let trailing: String? = payload.year.map { "\($0)" }
 
         return ModeContent(
             title: title,
@@ -493,8 +483,8 @@ private struct ModeContent {
             caption: payload.blurb(for: family),
             footer: payload.bestFooter,
             footerIcon: "location",
-            footerExtra: payload.year.map { "\($0)" },
-            cardTrailing: trailing,
+            footerExtra: nil,
+            cardTrailing: nil,
             cardRowsPhoto: [],
             cardRowsArch: rows,
             mode: .architecture
@@ -521,10 +511,9 @@ extension WidgetPayload {
         return "Wallpaper"
     }
 
-    /// Short, categorical eyebrow — architect / style / country.
+    /// Short, categorical eyebrow under the title. Country only — architect
+    /// and style aren't separate fields anymore (they live in the blurb).
     var bestEyebrow: String? {
-        if let architect = architect?.nilIfEmpty { return architect }
-        if let style = style?.nilIfEmpty { return style }
         if let country = locationCountry?.nilIfEmpty, country != bestTitle { return country }
         return nil
     }
@@ -577,9 +566,6 @@ extension WidgetPayload {
         unsplashID: "placeholder",
         imageFileName: "",
         buildingName: "Sagrada Família",
-        architect: "Antoni Gaudí",
-        year: 1882,
-        style: "Gothic revival",
         oneSentence: "A basilica in Barcelona, under construction since 1882.",
         blurbShort: "A basilica in Barcelona, under construction since 1882.",
         blurbMedium: "Antoni Gaudí's Sagrada Família is a basilica in Barcelona's Eixample district, under construction since 1882. Its blend of Gothic and Catalan modernist forms is unlike anything before or since.",

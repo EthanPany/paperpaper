@@ -34,12 +34,6 @@ enum LogLevel: String, Codable, CaseIterable, Sendable {
     case debug
 }
 
-enum Confidence: String, Codable, CaseIterable, Sendable {
-    case building
-    case areaOnly
-    case unknown
-}
-
 enum DayNightMode: String, Codable, CaseIterable, Sendable {
     case off
     case separatePools

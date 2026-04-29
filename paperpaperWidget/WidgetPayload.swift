@@ -5,9 +5,6 @@ struct WidgetPayload: Codable, Sendable {
     var unsplashID: String
     var imageFileName: String
     var buildingName: String?
-    var architect: String?
-    var year: Int?
-    var style: String?
     var oneSentence: String?
     var blurbShort: String?
     var blurbMedium: String?

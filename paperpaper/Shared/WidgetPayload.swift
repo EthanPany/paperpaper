@@ -4,9 +4,6 @@ struct WidgetPayload: Codable, Sendable {
     var unsplashID: String
     var imageFileName: String
     var buildingName: String?
-    var architect: String?
-    var year: Int?
-    var style: String?
     var oneSentence: String?
     /// Three length tiers from the architecture agent. Optional so an
     /// older payload (before this field existed) decodes cleanly.

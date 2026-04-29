@@ -30,9 +30,6 @@ enum ArchitectureAgent {
 
     struct Confirmed: Sendable {
         var name: String
-        var architect: String?
-        var year: Int?
-        var style: String?
         /// 1-sentence intro. Kept under `oneSentence` so existing call sites
         /// (widget payload, NowView card) keep reading what they always read.
         var oneSentence: String?
@@ -156,7 +153,7 @@ enum ArchitectureAgent {
             log.info("agent iter=\(iteration, privacy: .public): no tool / no JSON, prompting commit")
             messages.append(OllamaChatMessage(
                 role: "user",
-                content: "Now call the `commit_enrichment` tool with your final answer. Remember: blurb_short (1 sentence), blurb_medium (2–3 sentences), and blurb_long (3–5 sentences) are ALL required. If you can't identify a specific building, set building_name=null and confidence=\"low\" — but still produce all three blurbs describing the place or scene. Do NOT invent architects or years; use null when uncertain.",
+                content: "Now call the `commit_enrichment` tool with your final answer. Required fields: location, blurb_short (1 sentence), blurb_medium (2–3 sentences), blurb_long (3–5 sentences). Optional: building_name (null if no specific subject). If you don't know an architect or year, just don't mention it in the blurb — never invent.",
                 images: nil, tool_calls: nil, tool_name: nil
             ))
         }
@@ -171,23 +168,19 @@ enum ArchitectureAgent {
         STOP using tools. You have failed to commit \(maxIterations) times in a row.
 
         Reply with ONLY a single JSON object — no prose, no markdown fences, no
-        tool calls. The object MUST contain these keys exactly:
+        tool calls. The object MUST contain these 5 keys exactly:
 
         {
           "building_name": <string or null>,
-          "architect": <string or null>,
-          "year": <integer or null>,
-          "style": <string or null>,
           "location": <string, REQUIRED, "Anchor, City, Country">,
           "blurb_short": <string, REQUIRED, 1 sentence ≤ 18 words>,
           "blurb_medium": <string, REQUIRED, 2–3 sentences ≤ 55 words>,
-          "blurb_long": <string, REQUIRED, 3–5 sentences ≤ 130 words>,
-          "confidence": <"high"|"medium"|"low">
+          "blurb_long": <string, REQUIRED, 3–5 sentences ≤ 130 words>
         }
 
-        If you don't know the building specifically, set building_name=null and
-        confidence="low" but STILL produce all three blurbs about the scene.
-        Use null for unknown architect / year — DO NOT guess.
+        Architect / year / style do NOT have their own fields. Weave them into
+        blurb_medium and blurb_long when you know them; omit when you don't —
+        never invent.
         """
         messages.append(OllamaChatMessage(
             role: "user",
@@ -252,13 +245,10 @@ enum ArchitectureAgent {
            wastes the strongest signal in the photo.
 
         1) NO HALLUCINATION.
-           If you don't *know* a fact, set the field to null. Do NOT guess an architect
-           because the building looks "famous-ish." Do NOT guess a year. Famous buildings
-           that you confidently recognize are fine; everything else → null.
-             • Wrong: "this looks like a 1970s skyscraper" → year: 1973
-             • Right: → year: null
-           BUT: a clear sign that names a venue ("MADAME TUSSAUDS") IS knowing
-           the venue. Read the sign, then commit. That's not a guess.
+           If you don't *know* a fact, don't write it. Don't claim an architect
+           or a year inside a blurb because the building looks "famous-ish."
+           Drop the clause instead. A clear sign that names the venue
+           ("MADAME TUSSAUDS") IS knowing the venue — that's not a guess.
 
         2) building_name VS location ARE DIFFERENT THINGS.
            • building_name = the SPECIFIC subject the viewer is looking at
@@ -275,60 +265,49 @@ enum ArchitectureAgent {
         4) THREE BLURBS, EACH A DIFFERENT LENGTH. All three are required.
            • blurb_short  — exactly 1 sentence, ≤ 18 words. Single neutral
              description. Used in the smallest widget.
-           • blurb_medium — 2 to 3 sentences, ≤ 55 words. Reads like a
-             magazine caption: subject, era / architect / style, one
-             distinguishing detail. If you don't know the architect / year,
-             write the medium blurb without naming them — describe what's
-             actually visible (materials, height, setting, time of day).
+           • blurb_medium — 2 to 3 sentences, ≤ 55 words. Reads like a magazine
+             caption. When known, weave architect / year / style into the
+             prose ("Designed by X in YYYY, this Art Deco tower…"). If you
+             don't know those, describe what's actually visible (materials,
+             height, setting, time of day) — never invent.
            • blurb_long   — 3 to 5 sentences, ≤ 130 words. Mini-introduction:
-             when (only if known), who designed it (only if known), the
-             architectural style and a defining feature, optionally one
-             notable historical event, and what it is used for today.
-             Skip clauses you don't know — DO NOT pad with invented facts.
+             era + designer + style as natural prose, a defining feature,
+             optionally one historical note, and current use. Omit clauses
+             you don't know — DO NOT pad with invented facts.
 
         5) Tool use: at most 2 lookups before committing. Don't loop.
 
         ============================================================
-        FEW-SHOT EXAMPLES (for the commit_enrichment payload)
+        FEW-SHOT EXAMPLES (commit_enrichment payload — exactly these 5 keys)
         ============================================================
 
-        Example A — famous, fully known landmark:
+        Example A — famous, fully known landmark. Architect / year / style
+        appear ONLY inside the blurb prose, never as separate fields.
         {
           "building_name": "Empire State Building",
-          "architect": "Shreve, Lamb & Harmon",
-          "year": 1931,
-          "style": "Art Deco",
           "location": "Midtown Manhattan, New York, NY, USA",
           "blurb_short": "The Empire State Building rises 102 stories above Midtown Manhattan.",
           "blurb_medium": "Completed in 1931 by Shreve, Lamb & Harmon, the Empire State Building is a defining Art Deco skyscraper. Its limestone-and-aluminum tower was the world's tallest building for nearly forty years.",
-          "blurb_long": "Completed in 1931 to designs by Shreve, Lamb & Harmon, the Empire State Building is one of the most recognizable Art Deco towers in the world. It rises 102 stories above Midtown Manhattan and held the title of world's tallest building until 1970. The setback massing, polished aluminum spandrels, and chrome-nickel detailing are textbook Art Deco. Survived a B-25 bomber strike on the 79th floor in 1945. Today it remains an office tower with public observation decks on the 86th and 102nd floors.",
-          "confidence": "high"
+          "blurb_long": "Completed in 1931 to designs by Shreve, Lamb & Harmon, the Empire State Building is one of the most recognizable Art Deco towers in the world. It rises 102 stories above Midtown Manhattan and held the title of world's tallest building until 1970. The setback massing, polished aluminum spandrels, and chrome-nickel detailing are textbook Art Deco. Survived a B-25 bomber strike on the 79th floor in 1945. Today it remains an office tower with public observation decks on the 86th and 102nd floors."
         }
 
-        Example B — recognizable building, architect uncertain → null instead of guessing:
+        Example B — recognizable building, architect uncertain. Just don't
+        mention the architect.
         {
           "building_name": "Lloyd's of London",
-          "architect": null,
-          "year": null,
-          "style": "High-tech",
           "location": "City of London, London, UK",
           "blurb_short": "A high-tech insurance HQ in the City of London with services exposed on its exterior.",
           "blurb_medium": "Lloyd's of London is a landmark of the High-tech architectural movement. Stainless-steel ductwork, lifts, and stairwells run up the outside of the building, leaving the interior column-free.",
-          "blurb_long": "Lloyd's of London is a defining example of High-tech architecture, identified by the deliberate exposure of structure and services on the building's exterior. Stainless-steel ducts, glass lifts, and concrete stair towers climb the facade, freeing the interior into one large column-free atrium. The form is industrial-machine rather than monumental, and the building reads as a piece of equipment for the insurance market it houses. Today it remains the headquarters of the Lloyd's insurance market.",
-          "confidence": "high"
+          "blurb_long": "Lloyd's of London is a defining example of High-tech architecture, identified by the deliberate exposure of structure and services on the building's exterior. Stainless-steel ducts, glass lifts, and concrete stair towers climb the facade, freeing the interior into one large column-free atrium. The form is industrial-machine rather than monumental, and the building reads as a piece of equipment for the insurance market it houses. Today it remains the headquarters of the Lloyd's insurance market."
         }
 
-        Example C — generic scene, no specific subject:
+        Example C — generic scene, no specific subject.
         {
           "building_name": null,
-          "architect": null,
-          "year": null,
-          "style": null,
           "location": "Alfama, Lisbon, Portugal",
           "blurb_short": "A narrow tiled street in the Alfama district of Lisbon at dusk.",
           "blurb_medium": "A residential street in Alfama, Lisbon's oldest neighborhood, photographed at dusk. Pastel-tiled facades, wrought-iron balconies, and laundry lines define the streetscape.",
-          "blurb_long": "A residential street in Alfama, the oldest neighborhood of Lisbon, photographed at dusk. The facades are clad in azulejos — Portugal's signature glazed ceramic tiles — and dressed with wrought-iron balconies and lines of drying laundry. Alfama survived the 1755 earthquake that flattened most of the city, which is why its medieval street grid and Moorish-era density are still visible today. The district is residential, with cafés, fado bars, and small shops occupying the ground floors.",
-          "confidence": "low"
+          "blurb_long": "A residential street in Alfama, the oldest neighborhood of Lisbon, photographed at dusk. The facades are clad in azulejos — Portugal's signature glazed ceramic tiles — and dressed with wrought-iron balconies and lines of drying laundry. Alfama survived the 1755 earthquake that flattened most of the city, which is why its medieval street grid and Moorish-era density are still visible today. The district is residential, with cafés, fado bars, and small shops occupying the ground floors."
         }
 
         ============================================================
@@ -407,7 +386,7 @@ enum ArchitectureAgent {
         if let apiKey = KeychainService.shared.get(.ollamaAuthHeader), !apiKey.isEmpty {
             tools.append(OllamaToolSpec.function(
                 name: "web_search",
-                description: "Search the open web via Ollama's hosted search. Use to confirm architect / year / style for a candidate building before committing.",
+                description: "Search the open web via Ollama's hosted search. Use to confirm a candidate building name and gather facts to weave into the blurbs.",
                 parametersSchema: [
                     "type": "object",
                     "properties": [
@@ -420,21 +399,17 @@ enum ArchitectureAgent {
 
         tools.append(OllamaToolSpec.function(
             name: "commit_enrichment",
-            description: "REQUIRED terminal tool. Commit your final enrichment for the photo. building_name (the SPECIFIC subject) and location (the SURROUNDING area) must be distinct strings with different granularity.",
+            description: "REQUIRED terminal tool. Commit your final enrichment for the photo with EXACTLY these 5 keys. Architect / year / style are NOT separate fields — weave them into blurb_medium and blurb_long when known.",
             parametersSchema: [
                 "type": "object",
                 "properties": [
-                    "building_name": ["type": ["string", "null"], "description": "The SPECIFIC named subject of the photo: a building, bridge, monument, park, plaza, or natural landmark (e.g. \"Brooklyn Bridge\", \"Sagrada Família\", \"Half Dome\"). NOT a city or neighborhood — those go in `location`. Null if no specific subject can be confidently named."],
-                    "architect": ["type": ["string", "null"], "description": "Architect name. Null if unknown. DO NOT GUESS — null is required when uncertain."],
-                    "year": ["type": ["integer", "null"], "description": "Year built (or completion year). Null if unknown. DO NOT GUESS."],
-                    "style": ["type": ["string", "null"], "description": "Architectural style. Null if not applicable or unknown."],
+                    "building_name": ["type": ["string", "null"], "description": "The SPECIFIC named subject of the photo: a building, bridge, monument, park, plaza, or natural landmark. NOT a city or neighborhood — those go in `location`. Null if no specific subject can be confidently named."],
                     "location": ["type": "string", "description": "REQUIRED. \"Anchor, City, Country\" at neighborhood/district granularity. Different string from building_name. Never just a country."],
-                    "blurb_short": ["type": "string", "description": "REQUIRED. Exactly 1 sentence, ≤ 18 words. Single neutral description used by the smallest widget."],
-                    "blurb_medium": ["type": "string", "description": "REQUIRED. 2–3 sentences, ≤ 55 words. Magazine caption: subject, era/architect/style, one distinguishing detail. Skip clauses you don't know — never invent."],
-                    "blurb_long": ["type": "string", "description": "REQUIRED. 3–5 sentences, ≤ 130 words. Mini-introduction: when, who designed it (only if known), style + defining feature, optionally one historical note, and current use. Omit unknowns rather than fabricating."],
-                    "confidence": ["type": "string", "enum": ["high", "medium", "low"], "description": "Self-rated confidence in building_name."]
+                    "blurb_short": ["type": "string", "description": "REQUIRED. Exactly 1 sentence, ≤ 18 words. Single neutral description."],
+                    "blurb_medium": ["type": "string", "description": "REQUIRED. 2–3 sentences, ≤ 55 words. Weave architect/year/style into prose when known; describe what's visible when not. Never invent."],
+                    "blurb_long": ["type": "string", "description": "REQUIRED. 3–5 sentences, ≤ 130 words. Era + designer + style as prose, defining feature, optionally one historical note, current use. Omit unknowns."]
                 ],
-                "required": ["location", "blurb_short", "blurb_medium", "blurb_long", "confidence"]
+                "required": ["location", "blurb_short", "blurb_medium", "blurb_long"]
             ]
         ))
 
@@ -549,17 +524,13 @@ enum ArchitectureAgent {
 
     private struct CommitArgs {
         var building_name: String?
-        var architect: String?
-        var year: Int?
-        var style: String?
         var location: String?
         var blurb_short: String?
         var blurb_medium: String?
         var blurb_long: String?
-        /// Legacy field — older prompts asked for `one_sentence`. Treat as a
+        /// Legacy alias — older prompts asked for `one_sentence`. Treat as a
         /// fallback for blurb_short if the new fields are missing.
         var one_sentence: String?
-        var confidence: String?
     }
 
     /// Lenient parse of a `commit_enrichment` arg dict. Small models routinely
@@ -574,17 +545,6 @@ enum ArchitectureAgent {
             for key in keys {
                 if let s = obj[key] as? String { return s }
                 if let n = obj[key] as? NSNumber { return n.stringValue }
-            }
-            return nil
-        }
-        func int(_ keys: String...) -> Int? {
-            for key in keys {
-                if let n = obj[key] as? Int { return n }
-                if let d = obj[key] as? Double { return Int(d) }
-                if let s = obj[key] as? String {
-                    if let i = Int(s) { return i }
-                    if let d = Double(s) { return Int(d) }
-                }
             }
             return nil
         }
@@ -617,15 +577,11 @@ enum ArchitectureAgent {
 
         return CommitArgs(
             building_name: clean(str("building_name", "building")),
-            architect: clean(str("architect")),
-            year: int("year"),
-            style: clean(str("style", "architectural_style")),
             location: location,
             blurb_short: shortAlias,
             blurb_medium: mediumAlias,
             blurb_long: longAlias,
-            one_sentence: shortAlias,
-            confidence: str("confidence") ?? "low"
+            one_sentence: shortAlias
         )
     }
 
@@ -690,30 +646,20 @@ enum ArchitectureAgent {
                 bldg = nil
             }
         }
-        let conf = (args.confidence ?? "low").lowercased()
-        let isHighOrMedium = conf == "high" || conf == "medium"
-
-        // High/medium with name → full building enrichment.
-        if isHighOrMedium, let name = bldg {
+        // With a name → full enrichment. Without → use the placeholder; the
+        // applier's hasName check downstream will treat that as "scene only".
+        if let name = bldg {
             return Confirmed(
                 name: name,
-                architect: trimmed(args.architect),
-                year: args.year,
-                style: trimmed(args.style),
                 oneSentence: oneSentence,
                 blurbMedium: blurbMedium,
                 blurbLong: blurbLong,
                 location: location
             )
         }
-        // Otherwise keep the sentence (always required) and use building name
-        // if provided, else fall back to whatever description we have.
         if let oneSentence {
             return Confirmed(
-                name: bldg ?? "—",
-                architect: nil,
-                year: nil,
-                style: nil,
+                name: "—",
                 oneSentence: oneSentence,
                 blurbMedium: blurbMedium,
                 blurbLong: blurbLong,

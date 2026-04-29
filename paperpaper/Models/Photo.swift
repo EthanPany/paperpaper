@@ -108,23 +108,17 @@ final class Photo {
     }
 
     var bestPlaceSubtitle: String {
-        let architect = enrichment?.architect?.nilIfEmpty
         let fallbackLocation = [locationCity, locationCountry]
             .compactMap { $0?.nilIfEmpty }
             .joined(separator: ", ")
             .nilIfEmpty
-        let locationLine: String? = {
-            if locationComponents.count > 1 {
-                return locationComponents.dropFirst().joined(separator: ", ").nilIfEmpty
-            }
-            if let area = areaText.nilIfEmpty, area != bestPlaceTitle { return area }
-            if let fallbackLocation, fallbackLocation != bestPlaceTitle { return fallbackLocation }
-            if let country = locationCountry?.nilIfEmpty, country != bestPlaceTitle { return country }
-            return nil
-        }()
-        return [architect, locationLine]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        if locationComponents.count > 1 {
+            return locationComponents.dropFirst().joined(separator: ", ").nilIfEmpty ?? ""
+        }
+        if let area = areaText.nilIfEmpty, area != bestPlaceTitle { return area }
+        if let fallbackLocation, fallbackLocation != bestPlaceTitle { return fallbackLocation }
+        if let country = locationCountry?.nilIfEmpty, country != bestPlaceTitle { return country }
+        return ""
     }
 
     var areaText: String {
