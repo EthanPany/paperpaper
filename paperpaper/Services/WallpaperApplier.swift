@@ -46,8 +46,6 @@ final class WallpaperApplier {
             try? Store.shared.context.save()
         }
 
-        let appliedFile = (try? composeOverlayIfEnabled(for: photo, sourceFile: rawFile)) ?? rawFile
-
         Store.shared.recordShown(photo)
 
         // Order matters: set the wallpaper BEFORE writing the widget payload.
@@ -61,13 +59,13 @@ final class WallpaperApplier {
         defer { suppressWatcherSync = false }
 
         #if os(macOS)
-        try WallpaperService.shared.setOnAllScreens(imageURL: appliedFile)
+        try WallpaperService.shared.setOnAllScreens(imageURL: rawFile)
         // Same cross-Space propagation as reapply — rotation should also
         // visit the user's other Spaces over the next 5 minutes.
-        armCrossSpaceReapply(photo: photo, file: appliedFile, ttl: 300)
+        armCrossSpaceReapply(photo: photo, file: rawFile, ttl: 300)
         #endif
 
-        writeWidgetPayload(for: photo, file: appliedFile)
+        writeWidgetPayload(for: photo, file: rawFile)
 
         // Broadcast to other iCloud devices when this Mac is the primary.
         // Coordinator no-ops if sync is disabled or another Mac is primary.
@@ -102,8 +100,6 @@ final class WallpaperApplier {
         let rawFile = try await ensureDownloaded(id: photo.unsplashID, url: fullURL)
         ImageCache.shared.touch(rawFile)
 
-        let appliedFile = (try? composeOverlayIfEnabled(for: photo, sourceFile: rawFile)) ?? rawFile
-
         Store.shared.recordShown(photo)
 
         // See apply(unsplash:) — wallpaper first, then widget, with the
@@ -113,14 +109,14 @@ final class WallpaperApplier {
         defer { suppressWatcherSync = false }
 
         #if os(macOS)
-        try WallpaperService.shared.setOnAllScreens(imageURL: appliedFile)
+        try WallpaperService.shared.setOnAllScreens(imageURL: rawFile)
         // macOS only sets wallpaper on the CURRENT Space — there's no public
         // API to set across all Spaces simultaneously. Arm a one-shot
         // listener so the next time the user switches Spaces (within 5
         // minutes) we re-apply this photo automatically. Net effect: a
         // single click of "Reapply" eventually propagates to every Space
         // the user visits.
-        armCrossSpaceReapply(photo: photo, file: appliedFile, ttl: 300)
+        armCrossSpaceReapply(photo: photo, file: rawFile, ttl: 300)
         #endif
 
         // forceReload=true: the user asked for this explicitly, so refresh
@@ -129,7 +125,7 @@ final class WallpaperApplier {
         // enrichment landed AFTER the last automatic write — without
         // forceReload, the widget would keep rendering the pre-enrichment
         // payload.
-        writeWidgetPayload(for: photo, file: appliedFile, forceReload: true)
+        writeWidgetPayload(for: photo, file: rawFile, forceReload: true)
 
         // Reapplied photo might be one the rotation engine never enriched
         // (e.g. user picked it manually from Discover). Kick off the agent
@@ -286,14 +282,8 @@ final class WallpaperApplier {
             log.info("syncWidgetFromCurrent: no applied photo yet, no desktop URL")
             return
         }
-        let style = Store.shared.overlay()
         let raw = ImageCache.shared.fileURL(for: latest.unsplashID)
-        let overlay = ImageCache.shared.dir.appending(path: "\(latest.unsplashID).overlay.jpg")
-        let preferred: URL = {
-            if style.enabled, FileManager.default.fileExists(atPath: overlay.path) { return overlay }
-            return raw
-        }()
-        writeWidgetPayload(for: latest, file: preferred, forceReload: forceReload)
+        writeWidgetPayload(for: latest, file: raw, forceReload: forceReload)
         kickOffEnrichmentIfMissing(latest)
     }
 
@@ -466,20 +456,6 @@ final class WallpaperApplier {
         if FileManager.default.fileExists(atPath: local.path) { return local }
         let data = try await UnsplashService.shared.download(url)
         return try ImageCache.shared.put(data: data, for: id)
-    }
-
-    private func composeOverlayIfEnabled(for photo: Photo, sourceFile: URL) throws -> URL {
-        let style = Store.shared.overlay()
-        guard style.enabled else { return sourceFile }
-
-        #if os(macOS)
-        let output = ImageCache.shared.dir.appending(path: "\(photo.unsplashID).overlay.jpg")
-        let text = OverlayRenderer.text(for: photo, style: style)
-        try OverlayRenderer.compose(imageURL: sourceFile, text: text, style: style, to: output)
-        return output
-        #else
-        return sourceFile
-        #endif
     }
 
     /// Strip `com.apple.quarantine` from a file so a differently-sandboxed
@@ -656,11 +632,9 @@ final class WallpaperApplier {
     }
 
     /// Try to map a desktop wallpaper URL back to one of our known Photos.
-    /// Filenames in `ImageCache` are `<unsplashID>.jpg` and overlays are
-    /// `<unsplashID>.overlay.jpg`.
+    /// Filenames in `ImageCache` are `<unsplashID>.jpg`.
     private func matchPhoto(for url: URL) -> Photo? {
-        var name = url.deletingPathExtension().lastPathComponent
-        if name.hasSuffix(".overlay") { name = String(name.dropLast(".overlay".count)) }
+        let name = url.deletingPathExtension().lastPathComponent
         guard !name.isEmpty else { return nil }
 
         var descriptor = FetchDescriptor<Photo>(predicate: #Predicate { $0.unsplashID == name })

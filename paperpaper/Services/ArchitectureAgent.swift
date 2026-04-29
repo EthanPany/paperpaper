@@ -14,9 +14,8 @@ import MapKit
 ///        - `mapkit_search`  → live MapKit local-search (queries can target
 ///                              other coordinates, useful when the photographer
 ///                              shot a landmark from a distance).
-///        - `web_search`     → Ollama-hosted web search. Only enabled if the
-///                              user has configured `ollama.webSearch=true`
-///                              AND has an API key in keychain.
+///        - `web_search`     → Ollama-hosted web search. Enabled whenever an
+///                              Ollama API key is present in the keychain.
 ///        - `commit_enrichment` (TERMINAL) → final write of the enrichment
 ///                              fields. Loop exits when this fires.
 ///   3. Iterate up to 4 turns. If the model never calls `commit_enrichment`,

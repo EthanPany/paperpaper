@@ -33,26 +33,6 @@ private func logJSONBody(_ label: String, _ body: [String: Any]) {
     }
 }
 
-struct OllamaEnrichment: Decodable, Sendable {
-    let name: String?
-    let architect: String?
-    let year: Int?
-    let style: String?
-    let one_sentence: String?
-}
-
-/// Result of the architecture confirm step. `confidence` is the model's own
-/// self-rating ("high" / "medium" / "low"); ArchitectureAgent uses it to
-/// decide whether to commit fields or leave them blank.
-struct OllamaArchitectureConfirmation: Decodable, Sendable {
-    let name: String?
-    let architect: String?
-    let year: Int?
-    let style: String?
-    let one_sentence: String?
-    let confidence: String?
-}
-
 enum OllamaError: Error, LocalizedError {
     case missingURL
     case http(status: Int, body: String)
@@ -83,147 +63,6 @@ enum OllamaError: Error, LocalizedError {
 @MainActor
 final class OllamaService {
     static let shared = OllamaService()
-
-    func enrich(candidate: BuildingDetector.Candidate, tags: [String], gps: (lat: Double, lon: Double)?) async throws -> OllamaEnrichment {
-        let url = try baseURL().appending(path: "/api/generate")
-        let prompt = buildPrompt(candidate: candidate, tags: tags, gps: gps)
-
-        if webSearch() && (apiKey() ?? "").isEmpty {
-            throw OllamaError.missingAPIKey
-        }
-
-        var body: [String: Any] = [
-            "model": model(),
-            "prompt": prompt,
-            "format": "json",
-            "stream": false,
-            "options": [
-                "temperature": temperature(),
-            ],
-        ]
-        if webSearch() {
-            body["tools"] = [["type": "web_search"]]
-        }
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let auth = authorizationHeader() {
-            req.setValue(auth, forHTTPHeaderField: "Authorization")
-        }
-
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = timeoutSeconds()
-        cfg.timeoutIntervalForResource = timeoutSeconds() * 2
-        let session = URLSession(configuration: cfg)
-
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: req)
-        } catch {
-            throw OllamaError.transport(error)
-        }
-
-        guard let http = response as? HTTPURLResponse else {
-            throw OllamaError.http(status: -1, body: "")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw OllamaError.http(status: http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
-        }
-
-        struct OllamaResponse: Decodable { let response: String }
-        let outer: OllamaResponse
-        do {
-            outer = try JSONDecoder().decode(OllamaResponse.self, from: data)
-        } catch {
-            throw OllamaError.decoding(error)
-        }
-
-        guard let innerData = outer.response.data(using: .utf8), !outer.response.isEmpty else {
-            throw OllamaError.emptyResponse
-        }
-        do {
-            return try JSONDecoder().decode(OllamaEnrichment.self, from: innerData)
-        } catch {
-            throw OllamaError.decoding(error)
-        }
-    }
-
-    /// Architecture-confirm step. Hands the model a candidate name *and* a
-    /// list of nearby POIs from MapKit, asks it to pick the best match (or
-    /// none) and self-rate confidence as high / medium / low.
-    func confirmArchitecture(
-        candidate: BuildingDetector.Candidate?,
-        photoDescription: String?,
-        tags: [String],
-        area: String?,
-        gps: (lat: Double, lon: Double)?,
-        nearby: [ArchitectureAgent.NearbyPOI]
-    ) async throws -> OllamaArchitectureConfirmation {
-        let url = try baseURL().appending(path: "/api/generate")
-        let prompt = buildConfirmPrompt(
-            candidate: candidate,
-            photoDescription: photoDescription,
-            tags: tags,
-            area: area,
-            gps: gps,
-            nearby: nearby
-        )
-
-        if webSearch() && (apiKey() ?? "").isEmpty {
-            throw OllamaError.missingAPIKey
-        }
-
-        var body: [String: Any] = [
-            "model": model(),
-            "prompt": prompt,
-            "format": "json",
-            "stream": false,
-            "options": [
-                "temperature": 0.1,
-            ],
-        ]
-        if webSearch() {
-            body["tools"] = [["type": "web_search"]]
-        }
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let auth = authorizationHeader() {
-            req.setValue(auth, forHTTPHeaderField: "Authorization")
-        }
-
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = timeoutSeconds()
-        cfg.timeoutIntervalForResource = timeoutSeconds() * 2
-        let session = URLSession(configuration: cfg)
-
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: req)
-        } catch {
-            throw OllamaError.transport(error)
-        }
-
-        guard let http = response as? HTTPURLResponse else {
-            throw OllamaError.http(status: -1, body: "")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw OllamaError.http(status: http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
-        }
-
-        struct OllamaResponse: Decodable { let response: String }
-        let outer = try JSONDecoder().decode(OllamaResponse.self, from: data)
-        guard let innerData = outer.response.data(using: .utf8), !outer.response.isEmpty else {
-            throw OllamaError.emptyResponse
-        }
-        return try JSONDecoder().decode(OllamaArchitectureConfirmation.self, from: innerData)
-    }
 
     func ping() async -> Bool {
         guard let base = try? baseURL() else { return false }
@@ -281,10 +120,6 @@ final class OllamaService {
         (UserDefaults.standard.object(forKey: "ollama.timeoutSeconds") as? Double) ?? 30
     }
 
-    private func webSearch() -> Bool {
-        UserDefaults.standard.bool(forKey: "ollama.webSearch")
-    }
-
     private func apiKey() -> String? {
         KeychainService.shared.get(.ollamaAuthHeader)
     }
@@ -295,103 +130,6 @@ final class OllamaService {
             return key
         }
         return "Bearer \(key)"
-    }
-
-    private func buildConfirmPrompt(
-        candidate: BuildingDetector.Candidate?,
-        photoDescription: String?,
-        tags: [String],
-        area: String?,
-        gps: (lat: Double, lon: Double)?,
-        nearby: [ArchitectureAgent.NearbyPOI]
-    ) -> String {
-        var lines: [String] = [
-            "You are an architecture and place identification assistant.",
-            "Given metadata about an Unsplash photo, do BOTH of these:",
-            "",
-            "1. Try to identify a specific building. Only commit if you are highly",
-            "   confident based on candidate name + nearby landmarks + location.",
-            "2. ALWAYS write one short factual sentence (under 25 words) describing",
-            "   the place or scene — even when no specific building can be named.",
-            "   Use the area / city / country / nearby landmarks as fallback.",
-            "",
-            "Return ONLY a JSON object with these keys (no prose, no markdown):",
-            "  name (string|null) — specific building name, null if not confident",
-            "  architect (string|null) — null unless certain",
-            "  year (int|null) — null unless certain",
-            "  style (string|null) — architectural style if applicable",
-            "  one_sentence (string) — REQUIRED, never null. Describes the place.",
-            "  confidence (\"high\"|\"medium\"|\"low\") — your confidence in `name`",
-            "",
-            "Rules:",
-            "- one_sentence must be populated even when you cannot identify a building.",
-            "  In that case, describe the location (\"A street view in Lisbon, Portugal\")",
-            "  or scene type (\"Brutalist concrete facade in mid-day light\").",
-            "- If the candidate is generic (\"white building\", \"church\") and nearby",
-            "  landmarks don't match strongly, confidence=\"low\" and name=null.",
-            "- Never invent an architect or a year. Use null when unsure.",
-            "- No marketing language; neutral and factual only.",
-            "",
-        ]
-
-        if let candidate {
-            lines.append("Candidate name: \(candidate.name)")
-            if let hint = candidate.hint, !hint.isEmpty {
-                lines.append("Candidate hint: \(hint)")
-            }
-        } else {
-            lines.append("Candidate name: (none — only generic visual hints)")
-        }
-
-        if let desc = photoDescription, !desc.isEmpty {
-            lines.append("Photo description: \(desc)")
-        }
-        if !tags.isEmpty {
-            lines.append("Tags: \(tags.prefix(12).joined(separator: ", "))")
-        }
-        if let area, !area.isEmpty {
-            lines.append("Area / city: \(area)")
-        }
-        if let gps {
-            lines.append("GPS: \(String(format: "%.4f, %.4f", gps.lat, gps.lon))")
-        } else {
-            lines.append("GPS: unknown")
-        }
-
-        if nearby.isEmpty {
-            lines.append("Nearby landmarks: (none returned by map search)")
-        } else {
-            lines.append("Nearby landmarks within ~800m:")
-            for poi in nearby {
-                let dist = poi.distanceMeters.map { String(format: "%.0fm", $0) } ?? "?"
-                let cat = poi.category ?? "poi"
-                lines.append("  - \(poi.name) [\(cat)] \(dist)")
-            }
-        }
-
-        return lines.joined(separator: "\n")
-    }
-
-    private func buildPrompt(candidate: BuildingDetector.Candidate, tags: [String], gps: (lat: Double, lon: Double)?) -> String {
-        var lines = [
-            "You are an architecture expert. Given a candidate building name and contextual tags,",
-            "return a JSON object with EXACTLY these keys: name, architect, year, style, one_sentence.",
-            "If you are not confident about any field, use null for that field (not a guess).",
-            "one_sentence must be a single sentence, under 25 words, factual and neutral.",
-            "Do not include any text outside the JSON.",
-            "",
-            "Candidate: \(candidate.name)",
-        ]
-        if let hint = candidate.hint, !hint.isEmpty {
-            lines.append("Location hint: \(hint)")
-        }
-        if !tags.isEmpty {
-            lines.append("Tags: \(tags.prefix(12).joined(separator: ", "))")
-        }
-        if let gps {
-            lines.append("GPS: \(String(format: "%.4f, %.4f", gps.lat, gps.lon))")
-        }
-        return lines.joined(separator: "\n")
     }
 }
 
@@ -418,40 +156,126 @@ struct OllamaToolCall: Codable, Sendable {
 }
 
 /// A minimal "any JSON" wrapper. Ollama returns tool-call arguments as a
-/// JSON object whose shape depends on the tool. We carry it as Data so each
-/// caller can decode into its own struct.
+/// JSON object whose shape depends on the tool. We carry it as raw JSON bytes
+/// so each caller can decode into its own struct.
+///
+/// Both Codable hooks store and emit the bytes as a real JSON value (object /
+/// array / string / number / bool / null). An earlier version stringified the
+/// payload on encode, which corrupted any tool spec or tool_call sent through
+/// `JSONEncoder` — Ollama rejected the requests with `"Value looks like
+/// object, but can't find closing '}' symbol"`. Don't reintroduce that.
 struct AnyJSON: Codable, Sendable {
     let raw: Data
+
+    init(raw: Data) { self.raw = raw }
+
     init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        // Re-encode whatever was decoded back to JSON Data.
-        if let dict = try? container.decode([String: AnyJSON].self) {
-            self.raw = try JSONEncoder().encode(dict)
-        } else if let arr = try? container.decode([AnyJSON].self) {
-            self.raw = try JSONEncoder().encode(arr)
-        } else if let s = try? container.decode(String.self) {
-            // Some models return arguments as a JSON-encoded string.
-            self.raw = s.data(using: .utf8) ?? Data()
-        } else if let n = try? container.decode(Double.self) {
-            self.raw = "\(n)".data(using: .utf8) ?? Data()
-        } else if let b = try? container.decode(Bool.self) {
-            self.raw = (b ? "true" : "false").data(using: .utf8) ?? Data()
-        } else {
-            self.raw = Data()
+        // Read the singleValueContainer's underlying Foundation value via
+        // JSONSerialization so nested objects round-trip without us having to
+        // re-encode through the Codable graph (which is exactly the path that
+        // used to introduce the stringification bug).
+        if let c = try? decoder.singleValueContainer() {
+            if c.decodeNil() {
+                self.raw = "null".data(using: .utf8)!
+                return
+            }
+            if let b = try? c.decode(Bool.self) {
+                self.raw = (b ? "true" : "false").data(using: .utf8)!
+                return
+            }
+            if let i = try? c.decode(Int64.self) {
+                self.raw = "\(i)".data(using: .utf8)!
+                return
+            }
+            if let d = try? c.decode(Double.self) {
+                self.raw = "\(d)".data(using: .utf8)!
+                return
+            }
+            if let s = try? c.decode(String.self) {
+                let data = (try? JSONSerialization.data(withJSONObject: s, options: [.fragmentsAllowed])) ?? Data()
+                self.raw = data
+                return
+            }
+            if let dict = try? c.decode([String: AnyJSON].self) {
+                self.raw = AnyJSON.serialize(dict: dict)
+                return
+            }
+            if let arr = try? c.decode([AnyJSON].self) {
+                self.raw = AnyJSON.serialize(array: arr)
+                return
+            }
         }
+        self.raw = "null".data(using: .utf8)!
     }
+
     func encode(to encoder: Encoder) throws {
-        // Best-effort: write the raw bytes through.
         var container = encoder.singleValueContainer()
-        if let obj = try? JSONSerialization.jsonObject(with: raw) {
-            let data = try JSONSerialization.data(withJSONObject: obj)
-            try container.encode(String(data: data, encoding: .utf8) ?? "")
-        } else {
-            try container.encode(String(data: raw, encoding: .utf8) ?? "")
-        }
+        let parsed = (try? JSONSerialization.jsonObject(with: raw, options: [.fragmentsAllowed])) ?? NSNull()
+        try AnyJSON.encode(value: parsed, into: &container)
     }
+
     func decode<T: Decodable>(_ type: T.Type) -> T? {
         try? JSONDecoder().decode(type, from: raw)
+    }
+
+    // MARK: - Helpers
+
+    private static func serialize(dict: [String: AnyJSON]) -> Data {
+        var foundation: [String: Any] = [:]
+        for (k, v) in dict {
+            foundation[k] = (try? JSONSerialization.jsonObject(with: v.raw, options: [.fragmentsAllowed])) ?? NSNull()
+        }
+        return (try? JSONSerialization.data(withJSONObject: foundation, options: [.fragmentsAllowed])) ?? Data()
+    }
+
+    private static func serialize(array: [AnyJSON]) -> Data {
+        let foundation: [Any] = array.map { v in
+            (try? JSONSerialization.jsonObject(with: v.raw, options: [.fragmentsAllowed])) ?? NSNull()
+        }
+        return (try? JSONSerialization.data(withJSONObject: foundation, options: [.fragmentsAllowed])) ?? Data()
+    }
+
+    /// Recursively encodes a Foundation JSON value through Codable's
+    /// singleValueContainer. Order matters: NSNumber-bool must be checked
+    /// before NSNumber-numeric since a CFBoolean also bridges to NSNumber.
+    private static func encode(value: Any, into container: inout SingleValueEncodingContainer) throws {
+        if value is NSNull {
+            try container.encodeNil(); return
+        }
+        if let n = value as? NSNumber {
+            // CFBooleanGetTypeID detects __NSCFBoolean specifically; otherwise
+            // a true/false value would encode as 1/0.
+            if CFGetTypeID(n) == CFBooleanGetTypeID() {
+                try container.encode(n.boolValue); return
+            }
+            // Distinguish int from float by the Objective-C type encoding.
+            let t = String(cString: n.objCType)
+            if t == "f" || t == "d" {
+                try container.encode(n.doubleValue); return
+            }
+            try container.encode(n.int64Value); return
+        }
+        if let s = value as? String {
+            try container.encode(s); return
+        }
+        if let arr = value as? [Any] {
+            let wrapped = arr.map { v -> AnyJSON in
+                let bytes = (try? JSONSerialization.data(withJSONObject: v, options: [.fragmentsAllowed]))
+                    ?? "null".data(using: .utf8)!
+                return AnyJSON(raw: bytes)
+            }
+            try container.encode(wrapped); return
+        }
+        if let dict = value as? [String: Any] {
+            var wrapped: [String: AnyJSON] = [:]
+            for (k, v) in dict {
+                let bytes = (try? JSONSerialization.data(withJSONObject: v, options: [.fragmentsAllowed]))
+                    ?? "null".data(using: .utf8)!
+                wrapped[k] = AnyJSON(raw: bytes)
+            }
+            try container.encode(wrapped); return
+        }
+        try container.encodeNil()
     }
 }
 
@@ -482,14 +306,6 @@ struct OllamaToolSpec: Codable, Sendable {
         let data = (try? JSONSerialization.data(withJSONObject: parametersSchema)) ?? "{}".data(using: .utf8)!
         return OllamaToolSpec(type: "function", function: .init(name: name, description: description, parameters: AnyJSON(raw: data)))
     }
-}
-
-extension AnyJSON {
-    static let empty: AnyJSON = {
-        let data = "{}".data(using: .utf8)!
-        return (try? JSONDecoder().decode(AnyJSON.self, from: data)) ?? Self(raw: data)
-    }()
-    init(raw: Data) { self.raw = raw }
 }
 
 extension OllamaService {

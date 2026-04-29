@@ -88,7 +88,7 @@ struct AdvancedView: View {
         let keys = [
             "log.level", "network.timeoutSeconds", "network.retryCount", "app.hideDockIcon",
             "cache.maxSizeMB", "cache.prefetchCount", "cache.keepOnlyReferences",
-            "ollama.url", "ollama.model", "ollama.temperature", "ollama.timeoutSeconds", "ollama.webSearch",
+            "ollama.url", "ollama.model", "ollama.temperature", "ollama.timeoutSeconds",
         ]
         for key in keys { UserDefaults.standard.removeObject(forKey: key) }
     }
@@ -116,7 +116,7 @@ struct AdvancedView: View {
         let keys = [
             "log.level", "network.timeoutSeconds", "network.retryCount", "app.hideDockIcon",
             "cache.maxSizeMB", "cache.prefetchCount", "cache.keepOnlyReferences",
-            "ollama.url", "ollama.model", "ollama.temperature", "ollama.timeoutSeconds", "ollama.webSearch",
+            "ollama.url", "ollama.model", "ollama.temperature", "ollama.timeoutSeconds",
         ]
         var dict: [String: Any] = [:]
         for key in keys {

@@ -15,17 +15,12 @@ final class Store {
             HistoryEvent.self,
             RotationRule.self,
             FilterPrefs.self,
-            OverlayStyle.self,
-            SyncPrefs.self,
         ])
 
-        let syncEnabled = UserDefaults.standard.bool(forKey: "sync.enabled")
-        let config: ModelConfiguration
-        if syncEnabled {
-            config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .automatic)
-        } else {
-            config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
-        }
+        // SwiftData CloudKit integration is intentionally NOT used here. Sync
+        // is config-only (KVS via iCloudSyncCoordinator); the local store
+        // stays per-device.
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
         do {
             container = try ModelContainer(for: schema, configurations: [config])
         } catch {
@@ -47,14 +42,6 @@ final class Store {
 
     func filters() -> FilterPrefs {
         first(FilterPrefs.self) ?? insert(FilterPrefs())
-    }
-
-    func overlay() -> OverlayStyle {
-        first(OverlayStyle.self) ?? insert(OverlayStyle())
-    }
-
-    func syncPrefs() -> SyncPrefs {
-        first(SyncPrefs.self) ?? insert(SyncPrefs())
     }
 
     func photo(withUnsplashID id: String) -> Photo? {
@@ -159,8 +146,6 @@ final class Store {
     private func ensureSingletonsExist() {
         _ = rule()
         _ = filters()
-        _ = overlay()
-        _ = syncPrefs()
     }
 }
 
