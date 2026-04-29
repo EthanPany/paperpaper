@@ -421,8 +421,16 @@ final class WallpaperApplier {
         //   every field blank.
         let confirmed = await ArchitectureAgent.confirm(for: photo, imageFileURL: imageURL)
         if let confirmed {
-            let isBuilding = confirmed.architect != nil || confirmed.year != nil || confirmed.style != nil
-            enrichment.buildingName = isBuilding ? confirmed.name : nil
+            // Keep the building name whenever the agent committed a real
+            // (non-placeholder) name. The previous heuristic also required
+            // architect / year / style to be non-nil, which threw away every
+            // name the model identified without metadata — qwen3-vl
+            // produced "The Landmark Tavern" with no architect/year and we
+            // dropped it. makeConfirmed assigns "—" when it had no name at
+            // all, so that's the only case we still drop.
+            let trimmedName = confirmed.name.trimmingCharacters(in: .whitespaces)
+            let hasName = trimmedName != "—" && !trimmedName.isEmpty
+            enrichment.buildingName = hasName ? confirmed.name : nil
             enrichment.architect = confirmed.architect
             enrichment.year = confirmed.year
             enrichment.style = confirmed.style
@@ -430,7 +438,7 @@ final class WallpaperApplier {
             enrichment.blurbShort = confirmed.oneSentence
             enrichment.blurbMedium = confirmed.blurbMedium
             enrichment.blurbLong = confirmed.blurbLong
-            enrichment.confidence = isBuilding ? .building : .areaOnly
+            enrichment.confidence = hasName ? .building : .areaOnly
             enrichment.modelUsed = UserDefaults.standard.string(forKey: "ollama.model")
 
             // Adopt the agent's specific location string when Unsplash gave

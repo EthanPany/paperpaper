@@ -226,12 +226,39 @@ enum ArchitectureAgent {
         HARD RULES — read carefully, violations make the output unusable.
         ============================================================
 
+        0) READ THE SIGNS IN THE IMAGE FIRST.
+           Before anything else, scan the photo for visible text: marquees,
+           banner ads, theatre signs, awnings, station boards, building
+           inscriptions, neon letters, store fronts, bus destination boards,
+           street-sign blades. These are the strongest possible identification
+           anchors and most images that look "generic" actually contain a
+           dozen of them.
+
+           Examples of high-signal text:
+             • Theatre marquees ("AMSTERDAM", "NEW VICTORY", "MADAME TUSSAUDS")
+               → identify the block on 42nd Street, NYC.
+             • Tube/metro station boards ("BAKER STREET", "Châtelet")
+               → identify the city + neighborhood.
+             • Bus destination boards ("MANHATTAN", "AÉROPORT CDG")
+               → identify the city.
+             • Inscribed building names on facades / cornerstones.
+
+           When you see meaningful text:
+             • Use it verbatim as your `mapkit_search` query first
+               (`mapkit_search(query: "New Amsterdam Theatre")`), and/or
+             • Use it as part of a `web_search` query
+               (`web_search(query: "Madame Tussauds 42nd Street New York")`).
+           Do NOT ignore signs and fall back to "generic city street" — that
+           wastes the strongest signal in the photo.
+
         1) NO HALLUCINATION.
            If you don't *know* a fact, set the field to null. Do NOT guess an architect
            because the building looks "famous-ish." Do NOT guess a year. Famous buildings
            that you confidently recognize are fine; everything else → null.
              • Wrong: "this looks like a 1970s skyscraper" → year: 1973
              • Right: → year: null
+           BUT: a clear sign that names a venue ("MADAME TUSSAUDS") IS knowing
+           the venue. Read the sign, then commit. That's not a guess.
 
         2) building_name VS location ARE DIFFERENT THINGS.
            • building_name = the SPECIFIC subject the viewer is looking at
@@ -310,7 +337,22 @@ enum ArchitectureAgent {
     }
 
     private static func userPrompt(photo: Photo, area: String?, gps: (lat: Double, lon: Double)?, initialNearby: [NearbyPOI]) -> String {
-        var lines: [String] = ["Identify the place / building in the attached photo."]
+        var lines: [String] = [
+            "Identify the place / building in the attached photo.",
+            "",
+            "Step 1 — scan the image for visible text: theatre marquees, building",
+            "inscriptions, station boards, bus destination signs, awnings,",
+            "shopfronts, billboards. List the most distinctive 1–3 strings of",
+            "text you can read. These are your strongest identification anchors.",
+            "",
+            "Step 2 — use those strings as queries to mapkit_search and/or",
+            "web_search before guessing. Example: a sign reading \"MADAME",
+            "TUSSAUDS\" + \"NEW AMSTERDAM\" is enough to pin the photo to 42nd",
+            "Street, Manhattan with high confidence.",
+            "",
+            "Step 3 — commit_enrichment with what you've confirmed.",
+            ""
+        ]
         if let desc = photo.photoDescription ?? photo.altDescription, !desc.isEmpty {
             lines.append("Photo description (Unsplash): \(desc)")
         }
