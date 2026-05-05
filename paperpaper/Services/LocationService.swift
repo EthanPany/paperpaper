@@ -31,6 +31,8 @@ final class LocationService: NSObject {
 
     private static let displayNameKey = "nearby.displayName"
     private static let cachedAtKey = "nearby.cachedAt"
+    private static let latitudeKey = "nearby.latitude"
+    private static let longitudeKey = "nearby.longitude"
     private static let cacheLifetime: TimeInterval = 60 * 60 * 24
 
     override init() {
@@ -65,9 +67,35 @@ final class LocationService: NSObject {
         guard let location = await requestOneShotLocation() else { return nil }
         let region = await reverseGeocode(location)
         if let region {
-            persist(region)
+            persist(region, coordinate: location.coordinate)
         }
         return region
+    }
+
+    /// Returns the user's coarse coordinate. Used by Match Daylight for solar
+    /// altitude + per-photo distance scoring. Honors the same 24h cache as
+    /// `currentRegion()` so we don't hit CLLocationManager every rotation.
+    func currentCoordinate() async -> CLLocationCoordinate2D? {
+        if let cached = cachedCoordinate() { return cached }
+        guard isAuthorized else { return nil }
+        guard let location = await requestOneShotLocation() else { return nil }
+        // Persist coordinate even if reverse geocoding hasn't run yet.
+        UserDefaults.standard.set(location.coordinate.latitude, forKey: Self.latitudeKey)
+        UserDefaults.standard.set(location.coordinate.longitude, forKey: Self.longitudeKey)
+        UserDefaults.standard.set(Date.now.timeIntervalSince1970, forKey: Self.cachedAtKey)
+        return location.coordinate
+    }
+
+    private func cachedCoordinate() -> CLLocationCoordinate2D? {
+        let cachedAt = UserDefaults.standard.double(forKey: Self.cachedAtKey)
+        guard cachedAt > 0,
+              Date.now.timeIntervalSince1970 - cachedAt < Self.cacheLifetime,
+              UserDefaults.standard.object(forKey: Self.latitudeKey) != nil,
+              UserDefaults.standard.object(forKey: Self.longitudeKey) != nil
+        else { return nil }
+        let lat = UserDefaults.standard.double(forKey: Self.latitudeKey)
+        let lon = UserDefaults.standard.double(forKey: Self.longitudeKey)
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
     }
 
     private var isAuthorized: Bool {
@@ -92,8 +120,10 @@ final class LocationService: NSObject {
         return Region(displayName: displayName)
     }
 
-    private func persist(_ region: Region) {
+    private func persist(_ region: Region, coordinate: CLLocationCoordinate2D) {
         UserDefaults.standard.set(region.displayName, forKey: Self.displayNameKey)
+        UserDefaults.standard.set(coordinate.latitude, forKey: Self.latitudeKey)
+        UserDefaults.standard.set(coordinate.longitude, forKey: Self.longitudeKey)
         UserDefaults.standard.set(Date.now.timeIntervalSince1970, forKey: Self.cachedAtKey)
     }
 

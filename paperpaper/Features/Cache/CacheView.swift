@@ -13,6 +13,10 @@ struct CachePane: View {
     @AppStorage("cache.prefetchCount") private var prefetchCount: Int = 3
     @AppStorage("cache.keepOnlyReferences") private var keepOnlyReferences: Bool = true
 
+    #if os(macOS)
+    @StateObject private var loginItem = LoginItemController.shared
+    #endif
+
     @State private var currentSizeMB: Double = 0
     @State private var count: Int = 0
     @State private var showAdvanced: Bool = false
@@ -20,6 +24,26 @@ struct CachePane: View {
 
     var body: some View {
         Form {
+            #if os(macOS)
+            Section {
+                Toggle("Open at login", isOn: Binding(
+                    get: { loginItem.isEnabled },
+                    set: { loginItem.setEnabled($0) }
+                ))
+                if let err = loginItem.lastError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else {
+                    Text("Launch paperpaper automatically when you sign in to your Mac.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Startup")
+            }
+            #endif
+
             Section("Storage") {
                 Stepper(value: Binding(
                     get: { Int(maxSizeMB) },
@@ -96,7 +120,12 @@ struct CachePane: View {
             }
         }
         .formStyle(.grouped)
-        .task { refresh() }
+        .task {
+            refresh()
+            #if os(macOS)
+            loginItem.refresh()
+            #endif
+        }
     }
 
     private func refresh() {

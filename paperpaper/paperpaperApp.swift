@@ -52,6 +52,20 @@ struct paperpaperApp: App {
         // late-arriving enrichment text.
         Self.log.notice("paperpaperApp.init starting wallpaper watcher")
         WallpaperWatcher.shared.start()
+        // Always-on space observer: every active-space change triggers a
+        // lightweight reapply of the most-recent wallpaper on the now-active
+        // Space (gated to `spaceMode == .unified`). Owned at app scope so it
+        // works regardless of whether rotation is running or paused — the
+        // most reported failure was "switched to a new Space and the
+        // wallpaper didn't follow". Independent of RotationEngine so a
+        // paused schedule still keeps Spaces in sync.
+        Self.log.notice("paperpaperApp.init starting space observer")
+        SpaceObserver.shared.onChange = {
+            Task { @MainActor in
+                await WallpaperApplier.shared.reapplyOnCurrentSpace()
+            }
+        }
+        SpaceObserver.shared.start()
         Self.log.notice("paperpaperApp.init starting rotation engine")
         RotationEngine.shared.startIfEnabled()
         Self.log.notice("paperpaperApp.init starting iCloud sync coordinator")

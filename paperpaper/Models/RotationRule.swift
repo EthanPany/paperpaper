@@ -17,6 +17,7 @@ final class RotationRule {
     var allowRepeats: Bool = false
     var repeatCooldownDays: Int = 30
     var preferNearby: Bool = false
+    var matchDaylight: Bool = false
     var updatedAt: Date = Date.distantPast
 
     init(
@@ -33,7 +34,8 @@ final class RotationRule {
         spaceMode: SpaceMode = .unified,
         allowRepeats: Bool = false,
         repeatCooldownDays: Int = 30,
-        preferNearby: Bool = false
+        preferNearby: Bool = false,
+        matchDaylight: Bool = false
     ) {
         self.enabled = enabled
         self.scheduleModeRaw = scheduleMode.rawValue
@@ -49,6 +51,7 @@ final class RotationRule {
         self.allowRepeats = allowRepeats
         self.repeatCooldownDays = repeatCooldownDays
         self.preferNearby = preferNearby
+        self.matchDaylight = matchDaylight
         self.updatedAt = .now
     }
 

@@ -268,6 +268,7 @@ private struct RuleSnapshot: Codable {
     var allowRepeats: Bool
     var repeatCooldownDays: Int
     var preferNearby: Bool
+    var matchDaylight: Bool?
 
     static func snapshotting(_ rule: RotationRule) -> RuleSnapshot {
         RuleSnapshot(
@@ -283,7 +284,8 @@ private struct RuleSnapshot: Codable {
             nightStartHour: rule.nightStartHour,
             allowRepeats: rule.allowRepeats,
             repeatCooldownDays: rule.repeatCooldownDays,
-            preferNearby: rule.preferNearby
+            preferNearby: rule.preferNearby,
+            matchDaylight: rule.matchDaylight
         )
     }
 
@@ -301,6 +303,7 @@ private struct RuleSnapshot: Codable {
         && allowRepeats == rule.allowRepeats
         && repeatCooldownDays == rule.repeatCooldownDays
         && preferNearby == rule.preferNearby
+        && (matchDaylight ?? false) == rule.matchDaylight
     }
 
     func apply(to rule: RotationRule) {
@@ -317,5 +320,6 @@ private struct RuleSnapshot: Codable {
         rule.allowRepeats = allowRepeats
         rule.repeatCooldownDays = repeatCooldownDays
         rule.preferNearby = preferNearby
+        rule.matchDaylight = matchDaylight ?? false
     }
 }

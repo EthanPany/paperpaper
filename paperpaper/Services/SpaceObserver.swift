@@ -16,7 +16,13 @@ final class SpaceObserver {
     func start() {
         #if os(macOS)
         guard token == nil else { return }
-        token = NotificationCenter.default.addObserver(
+        // NSWorkspace notifications are delivered ONLY via
+        // `NSWorkspace.shared.notificationCenter` — registering on
+        // `NotificationCenter.default` silently never fires. Listening on
+        // the wrong center is what was making cross-space reapply
+        // intermittent: it only worked while WallpaperApplier's separate
+        // (correctly-registered) TTL observer was armed.
+        token = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
@@ -32,7 +38,7 @@ final class SpaceObserver {
 
     func stop() {
         #if os(macOS)
-        if let t = token { NotificationCenter.default.removeObserver(t) }
+        if let t = token { NSWorkspace.shared.notificationCenter.removeObserver(t) }
         token = nil
         #endif
     }

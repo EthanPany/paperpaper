@@ -283,6 +283,25 @@ struct RotationView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            Toggle("Match Daylight", isOn: Binding(
+                get: { rule.matchDaylight },
+                set: { newValue in
+                    rule.matchDaylight = newValue
+                    try? Store.shared.context.save()
+                    if newValue {
+                        Task {
+                            locationStatus = await LocationService.shared.requestAuthorization()
+                        }
+                    }
+                }
+            ))
+
+            if rule.matchDaylight {
+                Text("Picks brighter photos around solar noon and darker ones near night, based on the sun's position at your location.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

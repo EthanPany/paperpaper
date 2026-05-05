@@ -37,8 +37,10 @@ struct MenuBarContent: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(engine.isRunning ? "Rotation running" : "Rotation paused")
                     .font(.subheadline)
-                if let next = engine.nextFireAt, engine.isRunning {
-                    Text("Next at \(next.formatted(date: .omitted, time: .shortened))")
+                if let next = engine.nextFireAt {
+                    Text(engine.isRunning
+                         ? "Next at \(next.formatted(date: .omitted, time: .shortened))"
+                         : "Would fire at \(next.formatted(date: .omitted, time: .shortened))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -66,7 +68,14 @@ struct MenuBarContent: View {
                     ollamaReachable = await OllamaService.shared.ping()
                 }
             }
-            .onAppear { paintTick &+= 1 }
+            .onAppear {
+                paintTick &+= 1
+                // Re-sync engine with the persisted rule every time the
+                // popover opens, so `isRunning` / `nextFireAt` can never
+                // drift from truth (iCloud-sync rule changes, settings save
+                // bypassed by another window, etc.). Cheap + idempotent.
+                engine.reconcile()
+            }
 
             Divider()
 

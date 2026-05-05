@@ -65,9 +65,10 @@ final class WallpaperApplier {
 
         #if os(macOS)
         try WallpaperService.shared.setOnAllScreens(imageURL: rawFile)
-        // Same cross-Space propagation as reapply — rotation should also
-        // visit the user's other Spaces over the next 5 minutes.
-        armCrossSpaceReapply(photo: photo, file: rawFile, ttl: 300)
+        // Cross-Space propagation: SpaceObserver (started from app init)
+        // calls reapplyOnCurrentSpace() on every active-space change, so
+        // this rotation will land on each Space the user visits — no per-
+        // apply TTL observer needed.
         #endif
 
         writeWidgetPayload(for: photo, file: rawFile)
@@ -120,13 +121,9 @@ final class WallpaperApplier {
 
         #if os(macOS)
         try WallpaperService.shared.setOnAllScreens(imageURL: rawFile)
-        // macOS only sets wallpaper on the CURRENT Space — there's no public
-        // API to set across all Spaces simultaneously. Arm a one-shot
-        // listener so the next time the user switches Spaces (within 5
-        // minutes) we re-apply this photo automatically. Net effect: a
-        // single click of "Reapply" eventually propagates to every Space
-        // the user visits.
-        armCrossSpaceReapply(photo: photo, file: rawFile, ttl: 300)
+        // Cross-Space propagation is handled by the always-on SpaceObserver
+        // installed in paperpaperApp.init — it calls reapplyOnCurrentSpace()
+        // every time the user switches Spaces, with no TTL.
         #endif
 
         // forceReload=true: the user asked for this explicitly, so refresh
@@ -146,57 +143,37 @@ final class WallpaperApplier {
         return true
     }
 
-    #if os(macOS)
-    /// Tracks a "reapply on next Space change" intent. Set by `reapply()`
-    /// and consumed by `applyPendingCrossSpaceReapply()` on the next
-    /// `activeSpaceDidChange`. Holds onto an `expiresAt` so a stale intent
-    /// from hours ago doesn't overwrite the user's intentional later
-    /// rotations.
-    private struct PendingCrossSpaceReapply {
-        let photoID: PersistentIdentifier
-        let imageURL: URL
-        let expiresAt: Date
-    }
-    private var pendingCrossSpaceReapply: PendingCrossSpaceReapply?
-    private var spaceObserverToken: NSObjectProtocol?
+    /// Re-set the macOS wallpaper on the *current* Space using the most-
+    /// recently applied photo's cached file. macOS only sets wallpaper on
+    /// the active Space, so a single rotation otherwise stays on whichever
+    /// Space was active when it fired. SpaceObserver (started from
+    /// paperpaperApp.init) calls this on every active-space change.
+    ///
+    /// Lightweight: no download, no widget rewrite, no enrichment. Gated on
+    /// `spaceMode == .unified` — that's the only mode that semantically
+    /// asks for one wallpaper across every Space.
+    func reapplyOnCurrentSpace() async {
+        let rule = Store.shared.rule()
+        guard rule.spaceMode == .unified else { return }
 
-    private func armCrossSpaceReapply(photo: Photo, file: URL, ttl: TimeInterval) {
-        pendingCrossSpaceReapply = PendingCrossSpaceReapply(
-            photoID: photo.persistentModelID,
-            imageURL: file,
-            expiresAt: .now.addingTimeInterval(ttl)
-        )
-        // Install the observer once.
-        if spaceObserverToken == nil {
-            spaceObserverToken = NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.activeSpaceDidChangeNotification,
-                object: nil,
-                queue: .main
-            ) { _ in
-                Task { @MainActor in
-                    await WallpaperApplier.shared.applyPendingCrossSpaceReapply()
-                }
-            }
-        }
-    }
+        let descriptor = FetchDescriptor<Photo>(sortBy: [SortDescriptor(\.lastSeenAt, order: .reverse)])
+        guard let latest = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }) else { return }
+        let raw = ImageCache.shared.fileURL(for: latest.unsplashID)
+        guard FileManager.default.fileExists(atPath: raw.path) else { return }
 
-    private func applyPendingCrossSpaceReapply() async {
-        guard let pending = pendingCrossSpaceReapply else { return }
-        if pending.expiresAt < .now {
-            pendingCrossSpaceReapply = nil
-            return
-        }
-        // Re-apply on the (now-active) other Space. Don't disarm — the user
-        // may visit several more Spaces; each will get the photo too. The
-        // TTL limits how long this propagates.
+        #if os(macOS)
+        // Hold the watcher gate so a concurrent WallpaperWatcher tick can't
+        // snapshot a half-applied state during the setOnAllScreens call.
+        suppressWatcherSync = true
+        defer { suppressWatcherSync = false }
         do {
-            try WallpaperService.shared.setOnAllScreens(imageURL: pending.imageURL)
-            log.info("cross-space reapply: applied to current space")
+            try WallpaperService.shared.setOnAllScreens(imageURL: raw)
+            log.info("space-change reapply: \(latest.unsplashID, privacy: .public)")
         } catch {
-            log.error("cross-space reapply failed: \(error.localizedDescription, privacy: .public)")
+            log.error("space-change reapply failed: \(error.localizedDescription, privacy: .public)")
         }
+        #endif
     }
-    #endif
 
     /// Warm both image cache AND enrichment for a candidate the user hasn't
     /// rotated to yet. Called from RotationEngine's prefetch loop, so by the

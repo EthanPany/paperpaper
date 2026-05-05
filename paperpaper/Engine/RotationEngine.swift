@@ -1,6 +1,8 @@
 import Foundation
 import Observation
 import SwiftData
+import CoreLocation
+import AppKit
 
 @MainActor
 @Observable
@@ -12,6 +14,27 @@ final class RotationEngine {
     private(set) var nextFireAt: Date?
 
     private var loopTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
+
+    private init() {
+        // Restart the loop when the Mac wakes from sleep. `Task.sleep` is
+        // measured in elapsed real time, but a long sleep mid-loop combined
+        // with a closed lid means the rotation that "should" have fired during
+        // sleep can land late. Cancelling and restarting the loop forces an
+        // immediate past-due check so the wallpaper updates as soon as the
+        // user is looking at the screen again.
+        let observer = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRunning else { return }
+                self.start()
+            }
+        }
+        self.wakeObserver = observer
+    }
 
     /// Persisted across launches so re-opening the app does NOT trigger an
     /// immediate rotation if the schedule isn't due. Only consulted by the
@@ -33,16 +56,26 @@ final class RotationEngine {
         if rule.enabled { start() } else { stop() }
     }
 
+    /// Idempotent re-sync between persisted rule and engine state. Cheap to
+    /// call repeatedly — invoked from menu-bar popover open, settings save,
+    /// and iCloud-sync landings so `isRunning` / `nextFireAt` never drift.
+    /// Also recomputes `nextFireAt` while paused so the UI can always show
+    /// what the next fire WOULD be.
+    func reconcile() {
+        let rule = Store.shared.rule()
+        if rule.enabled {
+            if !isRunning { start() }
+        } else {
+            if isRunning { stop() }
+        }
+        let baseline = lastRotationAt ?? .now
+        nextFireAt = Scheduler.nextFire(for: rule, after: baseline)
+    }
+
     func start() {
         stop()
         isRunning = true
         lastError = nil
-        SpaceObserver.shared.onChange = { [weak self] in
-            Task { @MainActor [weak self] in
-                await self?.handleSpaceChange()
-            }
-        }
-        SpaceObserver.shared.start()
         loopTask = Task { [weak self] in
             await self?.loop()
         }
@@ -58,25 +91,19 @@ final class RotationEngine {
     func stop() {
         loopTask?.cancel()
         loopTask = nil
-        SpaceObserver.shared.onChange = nil
-        SpaceObserver.shared.stop()
         isRunning = false
-        nextFireAt = nil
+        // Keep `nextFireAt` populated based on the persisted rule so the
+        // menu bar can show "would fire at HH:MM" while paused. Truly
+        // clearing it is left to reconcile() / start() which both repopulate.
+        let rule = Store.shared.rule()
+        let baseline = lastRotationAt ?? .now
+        nextFireAt = Scheduler.nextFire(for: rule, after: baseline)
         iCloudSyncCoordinator.shared.publishRotationRule()
     }
 
     func rotateNow() async {
         await rotate()
         lastRotationAt = .now
-    }
-
-    private func handleSpaceChange() async {
-        let rule = Store.shared.rule()
-        guard rule.spaceMode == .unified else { return }
-
-        let descriptor = FetchDescriptor<Photo>(sortBy: [SortDescriptor(\.lastSeenAt, order: .reverse)])
-        guard let recent = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }) else { return }
-        _ = try? await WallpaperApplier.shared.reapply(photo: recent)
     }
 
     private func loop() async {
@@ -86,6 +113,22 @@ final class RotationEngine {
         // would rotate within seconds.
         if lastRotationAt == nil {
             lastRotationAt = .now
+        }
+
+        // Explicit past-due catch-up. When the app was closed (or the Mac
+        // slept) across a scheduled fire, the next-fire computed from the
+        // persisted `lastRotationAt` will be in the past — rotate once,
+        // immediately, before entering the regular sleep/fire loop. This is
+        // the guarantee we expose to users: re-opening paperpaper after a
+        // missed rotation updates the wallpaper right away.
+        let initialRule = Store.shared.rule()
+        if initialRule.enabled {
+            let baseline = lastRotationAt ?? .now
+            let nextScheduled = Scheduler.nextFire(for: initialRule, after: baseline)
+            if nextScheduled <= .now {
+                await rotate()
+                lastRotationAt = .now
+            }
         }
 
         while !Task.isCancelled {
@@ -98,8 +141,6 @@ final class RotationEngine {
             // is what stops re-launching the app from triggering a fresh
             // rotation: if we rotated 20 minutes ago on a 1h schedule, we
             // sleep for the remaining 40 minutes instead of firing again.
-            // If the device was offline through several scheduled fires,
-            // `interval` will be ≤ 0 and we rotate immediately to catch up.
             let baseline = lastRotationAt ?? .now
             let fire = Scheduler.nextFire(for: rule, after: baseline)
             nextFireAt = fire
@@ -159,12 +200,20 @@ final class RotationEngine {
                 }
             }
 
+            // Match Daylight: instead of taking the first eligible candidate,
+            // score each one by (location-distance + brightness-vs-sun-altitude)
+            // and pick the highest. Falls back transparently when the user has
+            // no location or when candidates lack lat/lon or color hex.
+            let scored: UnsplashPhoto? = rule.matchDaylight
+                ? await pickByDaylightScore(in: eligible, rule: rule)
+                : eligible.first
+
             // Last-resort: if dedup blocked everything, fall back to the
             // *least-recently-shown* photo in the pool. This keeps rotation
             // moving instead of erroring out when the user's cooldown is
             // larger than Unsplash's random variety for that topic.
             let chosen: UnsplashPhoto?
-            if let first = eligible.first {
+            if let first = scored {
                 chosen = first
             } else if !pool.isEmpty {
                 chosen = pickLeastRecent(in: pool, filters: filters)
@@ -186,13 +235,65 @@ final class RotationEngine {
                 await WallpaperApplier.shared.enrichIfNeeded(applied)
             }
 
-            let remaining = eligible.dropFirst().prefix(prefetchCount)
+            let remaining = eligible.filter { $0.id != first.id }.prefix(prefetchCount)
             for candidate in remaining {
                 await WallpaperApplier.shared.preCache(candidate)
             }
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    /// Score the candidate pool by (location, brightness vs. sun altitude) and
+    /// return the highest-scoring photo. Used when Match Daylight is enabled.
+    ///
+    /// The brightness target is derived from the sun's altitude at the *next
+    /// scheduled rotation time* (so a photo that lands at sunset gets picked at
+    /// the rotation tick that's about to run, not the one before). Location and
+    /// brightness combine as a weighted sum (location weighted slightly higher,
+    /// per the spec) — neither is a hard gate, so a perfect-brightness photo
+    /// that's far away can still beat a bright noon shot from down the street.
+    private func pickByDaylightScore(in pool: [UnsplashPhoto], rule: RotationRule) async -> UnsplashPhoto? {
+        guard !pool.isEmpty else { return nil }
+        let userCoord = await LocationService.shared.currentCoordinate()
+        let referenceTime = nextFireAt ?? .now
+        let target = SolarMath.targetBrightness(at: referenceTime, coordinate: userCoord)
+
+        let locationWeight = 0.6
+        let brightnessWeight = 0.4
+
+        var best: (photo: UnsplashPhoto, score: Double)?
+        for photo in pool {
+            var locScore: Double? = nil
+            if let user = userCoord,
+               let lat = photo.location?.position?.latitude,
+               let lon = photo.location?.position?.longitude {
+                locScore = SolarMath.locationScore(userLat: user.latitude, userLon: user.longitude, photoLat: lat, photoLon: lon)
+            }
+
+            var brScore: Double? = nil
+            if let b = SolarMath.brightness(fromHex: photo.color) {
+                brScore = SolarMath.brightnessScore(candidate: b, target: target)
+            }
+
+            // If we have neither signal for this candidate, keep it in the
+            // running with a neutral score so we don't filter it out entirely.
+            let combined: Double
+            switch (locScore, brScore) {
+            case let (l?, b?): combined = locationWeight * l + brightnessWeight * b
+            case let (l?, nil): combined = l
+            case let (nil, b?): combined = b
+            case (nil, nil): combined = 0.5
+            }
+
+            // Tiny jitter so identical scores don't always pick the same photo.
+            let jitter = Double.random(in: 0...0.001)
+            let total = combined + jitter
+            if best == nil || total > best!.score {
+                best = (photo, total)
+            }
+        }
+        return best?.photo
     }
 
     /// Build the search-query ladder for one rotation. When `preferNearby`

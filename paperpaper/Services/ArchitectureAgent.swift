@@ -219,7 +219,22 @@ enum ArchitectureAgent {
         HARD RULES — read carefully, violations make the output unusable.
         ============================================================
 
-        0) READ THE SIGNS IN THE IMAGE FIRST.
+        0a) PHOTO METADATA IS AUTHORITATIVE.
+           The user's prompt includes metadata fields: description, tags,
+           location/area, EXIF GPS. THESE ARE GROUND TRUTH. The photographer
+           was there; the photo is OF that place.
+             • If metadata says the photo is in Spain, your `location` and
+               `building_name` MUST be in Spain. You may NOT name a venue
+               in another country no matter how visually similar it looks.
+             • If metadata names a specific neighborhood/landmark, your
+               answer must be consistent with it.
+             • If metadata is silent, fall back to the image evidence.
+           NEVER override metadata based on how the building "looks like" a
+           famous place elsewhere. If the photo description mentions
+           "Barcelona" and the building looks like an NYC bar you saw in
+           training data, it's still Barcelona.
+
+        0b) READ THE SIGNS IN THE IMAGE FIRST.
            Before anything else, scan the photo for visible text: marquees,
            banner ads, theatre signs, awnings, station boards, building
            inscriptions, neon letters, store fronts, bus destination boards,
@@ -294,73 +309,63 @@ enum ArchitectureAgent {
         5) Tool use: at most 2 lookups before committing. Don't loop.
 
         ============================================================
-        FEW-SHOT EXAMPLES (commit_enrichment payload — exactly these 5 keys)
+        OUTPUT SHAPE (commit_enrichment — exactly these 5 keys)
         ============================================================
 
-        Example A — famous, fully known landmark. Architect / year / style
-        appear ONLY inside the blurb prose, never as separate fields.
+        These templates show STRUCTURE only. Substitute the actual place
+        from the photo's metadata + visible evidence — never copy specific
+        names from these templates.
+
+        Template — known, named subject (architect / year / style live in
+        the blurb prose, never as separate fields):
         {
-          "building_name": "Empire State Building",
-          "location": "Midtown Manhattan, New York, NY, USA",
-          "blurb_short": "The Empire State Building rises 102 stories above Midtown Manhattan.",
-          "blurb_medium": "Completed in 1931 by Shreve, Lamb & Harmon, the Empire State Building is a defining Art Deco skyscraper. Its limestone-and-aluminum tower was the world's tallest building for nearly forty years.",
-          "blurb_long": "Completed in 1931 to designs by Shreve, Lamb & Harmon, the Empire State Building is one of the most recognizable Art Deco towers in the world. It rises 102 stories above Midtown Manhattan and held the title of world's tallest building until 1970. The setback massing, polished aluminum spandrels, and chrome-nickel detailing are textbook Art Deco. Survived a B-25 bomber strike on the 79th floor in 1945. Today it remains an office tower with public observation decks on the 86th and 102nd floors."
+          "building_name": "<the specific subject visible in the photo>",
+          "location": "<Anchor or district>, <City>, <Country>",
+          "blurb_short": "<one neutral sentence, ≤ 18 words, names the place + its setting>",
+          "blurb_medium": "<2–3 sentences. Weave in architect / year / style ONLY when you actually know them; otherwise describe what is visible.>",
+          "blurb_long": "<3–5 sentences. Era + designer + style as natural prose, a defining feature, current use. Omit anything you don't know — never pad with invented facts.>"
         }
 
-        Example B — recognizable building, architect uncertain. Just don't
-        mention the architect.
-        {
-          "building_name": "Lloyd's of London",
-          "location": "City of London, London, UK",
-          "blurb_short": "A high-tech insurance HQ in the City of London with services exposed on its exterior.",
-          "blurb_medium": "Lloyd's of London is a landmark of the High-tech architectural movement. Stainless-steel ductwork, lifts, and stairwells run up the outside of the building, leaving the interior column-free.",
-          "blurb_long": "Lloyd's of London is a defining example of High-tech architecture, identified by the deliberate exposure of structure and services on the building's exterior. Stainless-steel ducts, glass lifts, and concrete stair towers climb the facade, freeing the interior into one large column-free atrium. The form is industrial-machine rather than monumental, and the building reads as a piece of equipment for the insurance market it houses. Today it remains the headquarters of the Lloyd's insurance market."
-        }
-
-        Example C — generic scene, no specific subject.
+        Template — generic scene, no specific subject:
         {
           "building_name": null,
-          "location": "Alfama, Lisbon, Portugal",
-          "blurb_short": "A narrow tiled street in the Alfama district of Lisbon at dusk.",
-          "blurb_medium": "A residential street in Alfama, Lisbon's oldest neighborhood, photographed at dusk. Pastel-tiled facades, wrought-iron balconies, and laundry lines define the streetscape.",
-          "blurb_long": "A residential street in Alfama, the oldest neighborhood of Lisbon, photographed at dusk. The facades are clad in azulejos — Portugal's signature glazed ceramic tiles — and dressed with wrought-iron balconies and lines of drying laundry. Alfama survived the 1755 earthquake that flattened most of the city, which is why its medieval street grid and Moorish-era density are still visible today. The district is residential, with cafés, fado bars, and small shops occupying the ground floors."
+          "location": "<District or street>, <City>, <Country>",
+          "blurb_short": "<one sentence describing the kind of place + city>",
+          "blurb_medium": "<2–3 sentences describing the scene's character — materials, era, time of day — without naming a building.>",
+          "blurb_long": "<3–5 sentences about the neighborhood / typology / setting — context only, no invented building name.>"
         }
 
         ============================================================
-        Now produce a commit for the photo the user sent.
+        Now produce a commit for the photo the user sent. The photo's
+        metadata (below in the user message) is AUTHORITATIVE — your
+        location and building_name MUST be consistent with it.
         """
     }
 
     private static func userPrompt(photo: Photo, area: String?, gps: (lat: Double, lon: Double)?, initialNearby: [NearbyPOI]) -> String {
-        var lines: [String] = [
-            "Identify the place / building in the attached photo.",
-            "",
-            "Step 1 — scan the image for visible text: theatre marquees, building",
-            "inscriptions, station boards, bus destination signs, awnings,",
-            "shopfronts, billboards. List the most distinctive 1–3 strings of",
-            "text you can read. These are your strongest identification anchors.",
-            "",
-            "Step 2 — use those strings as queries to mapkit_search and/or",
-            "web_search before guessing. Example: a sign reading \"MADAME",
-            "TUSSAUDS\" + \"NEW AMSTERDAM\" is enough to pin the photo to 42nd",
-            "Street, Manhattan with high confidence.",
-            "",
-            "Step 3 — commit_enrichment with what you've confirmed.",
-            ""
-        ]
+        // Lead with photo metadata as authoritative ground truth — the prior
+        // structure (instructions on top, metadata at the tail) caused the
+        // model to anchor on the few-shot examples instead of the photo's
+        // actual location, producing things like "Landmark Tavern in
+        // Manhattan" for a photo tagged Barcelona.
+        var lines: [String] = ["=== PHOTO METADATA (AUTHORITATIVE — your answer must be consistent with these) ==="]
         if let desc = photo.photoDescription ?? photo.altDescription, !desc.isEmpty {
-            lines.append("Photo description (Unsplash): \(desc)")
+            lines.append("Description: \(desc)")
+        } else {
+            lines.append("Description: (none)")
         }
         if !photo.tags.isEmpty {
             lines.append("Tags: \(photo.tags.prefix(12).joined(separator: ", "))")
         }
         if let area {
-            lines.append("Area / city (Unsplash location string): \(area)")
+            lines.append("Location string (Unsplash): \(area)")
+        } else {
+            lines.append("Location string: (unknown)")
         }
         if let gps {
             lines.append("EXIF GPS: \(String(format: "%.4f, %.4f", gps.lat, gps.lon))")
         } else {
-            lines.append("EXIF GPS: unknown")
+            lines.append("EXIF GPS: (none)")
         }
         if !initialNearby.isEmpty {
             lines.append("Nearby landmarks (Apple Maps, ~800m radius around EXIF):")
@@ -371,7 +376,12 @@ enum ArchitectureAgent {
             }
         }
         lines.append("")
-        lines.append("Use the tools if you need more info, then call commit_enrichment.")
+        lines.append("=== TASK ===")
+        lines.append("Identify the place in the attached photo. Your `location` and `building_name` MUST be consistent with the metadata above — if the metadata says one country/city, your answer must be in that country/city. Do not propose a venue from a different country no matter how visually familiar the building seems.")
+        lines.append("")
+        lines.append("Step 1 — scan the image for visible text (marquees, inscriptions, station boards, shopfronts, awnings). List the 1–3 most distinctive strings.")
+        lines.append("Step 2 — use those strings as `mapkit_search` / `web_search` queries IF you need to nail down the specific subject. Constrain searches to the metadata's city/country whenever possible (e.g. `mapkit_search(query: \"Casa Batlló Barcelona\")`).")
+        lines.append("Step 3 — call `commit_enrichment` with what you've confirmed. If you cannot identify a specific building but the metadata gives a city, return `building_name: null` and put the city in `location`. That's a valid, useful answer.")
         return lines.joined(separator: "\n")
     }
 
