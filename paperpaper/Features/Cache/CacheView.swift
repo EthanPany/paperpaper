@@ -9,7 +9,7 @@ struct DataView: View {
 }
 
 struct CachePane: View {
-    @AppStorage("cache.maxSizeMB") private var maxSizeMB: Double = 500
+    @AppStorage("cache.maxSizeMB") private var maxSizeMB: Double = 0
     @AppStorage("cache.prefetchCount") private var prefetchCount: Int = 3
     @AppStorage("cache.keepOnlyReferences") private var keepOnlyReferences: Bool = true
 
@@ -48,11 +48,11 @@ struct CachePane: View {
                 Stepper(value: Binding(
                     get: { Int(maxSizeMB) },
                     set: { maxSizeMB = Double($0) }
-                ), in: 50...10000, step: 50) {
+                ), in: 0...10000, step: 50) {
                     HStack {
                         Text("Max size")
                         Spacer()
-                        Text("\(Int(maxSizeMB)) MB")
+                        Text(maxSizeMB == 0 ? "Off" : "\(Int(maxSizeMB)) MB")
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }

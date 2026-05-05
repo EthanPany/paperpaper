@@ -711,7 +711,7 @@ final class WallpaperApplier {
     }
 
     private func enforceCacheCap() {
-        let maxMB = UserDefaults.standard.object(forKey: "cache.maxSizeMB") as? Double ?? 500
+        let maxMB = UserDefaults.standard.object(forKey: "cache.maxSizeMB") as? Double ?? 0
         let maxBytes = Int64(maxMB * 1024 * 1024)
         let protected = currentWallpaperIDs()
         ImageCache.shared.enforceCap(maxBytes: maxBytes, protectedIDs: protected)
