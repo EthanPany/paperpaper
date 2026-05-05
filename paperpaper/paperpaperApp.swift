@@ -92,6 +92,19 @@ struct paperpaperApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+
+        // SwiftUI menu-bar item. Replaces the AppKit NSStatusItem/NSPopover
+        // setup so MenuBarContent inherits the scene environment — most
+        // importantly `\.openWindow`, which can open the SwiftUI Window
+        // scene whether or not it's been shown before. The previous bridge-
+        // via-`.onAppear` pattern was nil on first launch (LSUIElement=YES,
+        // window never shown) and silently dropped the menu-bar "Open
+        // paperpaper…" click.
+        MenuBarExtra("paperpaper", systemImage: "photo.stack.fill") {
+            MenuBarContent()
+                .modelContainer(Store.shared.container)
+        }
+        .menuBarExtraStyle(.window)
         #else
         WindowGroup {
             MainWindowRouter()

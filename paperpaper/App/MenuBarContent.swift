@@ -5,7 +5,8 @@ import AppKit
 #endif
 
 struct MenuBarContent: View {
-    let openMainWindow: () -> Void
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
     @State private var engine = RotationEngine.shared
     @State private var applier = WallpaperApplier.shared
     @State private var ollamaReachable: Bool? = nil
@@ -138,7 +139,11 @@ struct MenuBarContent: View {
             Divider()
 
             Button("Open paperpaper…", systemImage: "macwindow") {
-                openMainWindow()
+                #if os(macOS)
+                NSApp.activate(ignoringOtherApps: true)
+                #endif
+                openWindow(id: WindowID.main)
+                dismiss()
             }
             .buttonStyle(.borderless)
 
@@ -236,5 +241,5 @@ private struct WallpaperPreview: View {
 }
 
 #Preview {
-    MenuBarContent(openMainWindow: {})
+    MenuBarContent()
 }

@@ -9,9 +9,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowDidBecomeMainObserver: NSObjectProtocol?
     private var windowWillCloseObserver: NSObjectProtocol?
 
-    private var statusItem: NSStatusItem?
-    private var popover: NSPopover?
-
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -32,52 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         OpenMainWindowBridge.requestOpenMainWindow = { [weak self] in
             self?.openMainWindow()
         }
-        installStatusItem()
         updateActivationPolicyForWindowVisibility(reason: "launch")
-    }
-
-    private func installStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: 28)
-        item.behavior = [.removalAllowed]
-        item.autosaveName = "me.ethanpan.paperpaper.menubar"
-        item.isVisible = true
-        if let button = item.button {
-            let image = NSImage(systemSymbolName: "photo.stack.fill", accessibilityDescription: "paperpaper")
-                ?? NSImage(systemSymbolName: "photo", accessibilityDescription: "paperpaper")
-            image?.size = NSSize(width: 18, height: 18)
-            image?.isTemplate = true
-            button.image = image
-            button.imagePosition = .imageOnly
-            button.target = self
-            button.action = #selector(statusItemClicked(_:))
-        }
-        statusItem = item
-        log.notice("status item created: visible=\(item.isVisible) length=\(item.length) hasImage=\(item.button?.image != nil)")
-
-        let popover = NSPopover()
-        popover.behavior = .transient
-        // Tall enough for: wallpaper preview (150) + status block (~80) +
-        // five action buttons (~26 each) + open / quit (~52). NSPopover
-        // doesn't auto-resize; SwiftUI's intrinsic content goes through this
-        // value, so undersize → content gets clipped.
-        popover.contentSize = NSSize(width: 300, height: 540)
-        popover.contentViewController = NSHostingController(rootView: MenuBarContent(openMainWindow: { [weak self] in
-            self?.popover?.performClose(nil)
-            self?.openMainWindow()
-        }))
-        self.popover = popover
-
-        log.notice("installed AppKit NSStatusItem with autosaveName=me.ethanpan.paperpaper.menubar")
-    }
-
-    @objc private func statusItemClicked(_ sender: Any?) {
-        guard let popover, let button = statusItem?.button else { return }
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
-        }
     }
 
     private func openMainWindow() {
