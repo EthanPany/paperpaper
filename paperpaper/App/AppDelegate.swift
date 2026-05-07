@@ -33,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openMainWindow() {
+        // Whoever asked us to open the window expects "the app", which means
+        // Photo, never Settings. Reset before activating so the user can't
+        // get stranded on Settings after closing the window from there.
+        MainWindowState.shared.mode = .photo
         setActivationPolicy(.regular, reason: "open-main-window")
         if #available(macOS 14.0, *) {
             NSApp.activate()

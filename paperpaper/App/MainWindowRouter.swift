@@ -9,12 +9,26 @@ enum WindowMode: String, CaseIterable, Identifiable {
     var icon: String { self == .photo ? "photo" : "gearshape" }
 }
 
+/// Shared mode state for the single main `Window` scene. The previous
+/// per-view `@State` survived close/reopen cycles, so closing while on
+/// Settings meant the next "Open paperpaper…" reopened the window still on
+/// Settings — the user described this as "stuck on the settings window with
+/// no way back". Hoisting it lets the menu-bar button and dock-icon reopen
+/// reset mode to `.photo` before the window comes forward.
+@MainActor
+@Observable
+final class MainWindowState {
+    static let shared = MainWindowState()
+    var mode: WindowMode = .photo
+    private init() {}
+}
+
 struct MainWindowRouter: View {
-    @State private var mode: WindowMode = .photo
+    @State private var state = MainWindowState.shared
 
     var body: some View {
         ZStack {
-            switch mode {
+            switch state.mode {
             case .photo:
                 NowView()
                     .transition(.asymmetric(
@@ -29,11 +43,14 @@ struct MainWindowRouter: View {
                     ))
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: mode)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: state.mode)
         .frame(minWidth: 900, minHeight: 620)
         .toolbar {
             ToolbarItemGroup(placement: .principal) {
-                Picker("", selection: $mode) {
+                Picker("", selection: Binding(
+                    get: { state.mode },
+                    set: { state.mode = $0 }
+                )) {
                     ForEach(WindowMode.allCases) { m in
                         Label(m.label, systemImage: m.icon).tag(m)
                     }

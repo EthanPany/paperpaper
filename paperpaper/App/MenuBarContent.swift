@@ -139,6 +139,11 @@ struct MenuBarContent: View {
             Divider()
 
             Button("Open paperpaper…", systemImage: "macwindow") {
+                // Always land on Photo. Without this, the router's mode
+                // sticks across close/reopen — closing while on Settings
+                // meant the next click reopened on Settings with no obvious
+                // way back.
+                MainWindowState.shared.mode = .photo
                 #if os(macOS)
                 NSApp.activate(ignoringOtherApps: true)
                 #endif
