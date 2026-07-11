@@ -20,20 +20,33 @@ final class WallpaperWatcher {
     private var activeToken: NSObjectProtocol?
     #endif
     private var timer: Timer?
+    private var spaceSyncDebounce: Timer?
+
+    /// `activeSpaceDidChangeNotification` fires several times per transition.
+    /// syncWidgetFromCurrent is expensive on the main actor (copies the image
+    /// into the App Group, then `reloadAllTimelines` + 3 per-kind reloads), so
+    /// running it on every raw fire stacks up and stalls the Dock/WindowServer.
+    /// Coalesce to one run per transition. The window is deliberately LONGER
+    /// than SpaceObserver's 0.35s reapply debounce: that way the wallpaper has
+    /// already been re-pushed to the new Space by the time we read the desktop
+    /// URL, so we match our own photo instead of snapshotting the macOS default
+    /// frame mid-flash (which would clobber the good payload).
+    private let spaceSyncInterval: TimeInterval = 0.6
 
     func start() {
         #if os(macOS)
         guard spaceToken == nil else { return }
 
         // Active-space change: payload is usually unchanged, so let
-        // commitPayload's idempotence skip the reload.
+        // commitPayload's idempotence skip the reload. Debounced — see
+        // scheduleSpaceSync.
         spaceToken = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
-        ) { _ in
+        ) { [weak self] _ in
             Task { @MainActor in
-                WallpaperApplier.shared.syncWidgetFromCurrent()
+                self?.scheduleSpaceSync()
             }
         }
 
@@ -75,6 +88,23 @@ final class WallpaperWatcher {
         #endif
     }
 
+    #if os(macOS)
+    /// Coalesce the burst of `activeSpaceDidChange` notifications into a single
+    /// widget sync, run after the Space (and SpaceObserver's reapply) has
+    /// settled. Resets the window on every raw fire.
+    private func scheduleSpaceSync() {
+        spaceSyncDebounce?.invalidate()
+        log.info("space change observed (debouncing widget sync)")
+        let t = Timer(timeInterval: spaceSyncInterval, repeats: false) { _ in
+            Task { @MainActor in
+                WallpaperApplier.shared.syncWidgetFromCurrent()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        spaceSyncDebounce = t
+    }
+    #endif
+
     func stop() {
         #if os(macOS)
         if let t = spaceToken { NSWorkspace.shared.notificationCenter.removeObserver(t) }
@@ -82,6 +112,8 @@ final class WallpaperWatcher {
         spaceToken = nil
         activeToken = nil
         #endif
+        spaceSyncDebounce?.invalidate()
+        spaceSyncDebounce = nil
         timer?.invalidate()
         timer = nil
     }

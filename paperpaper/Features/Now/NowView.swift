@@ -12,18 +12,45 @@ struct NowView: View {
     // doesn't bump the Photo, so PhotoMetadataCard would keep reading stale
     // (un-enriched) `photo.enrichment?.buildingName`.
     @Query private var enrichmentSubscription: [Enrichment]
+    // Drives the first-run checklist's "rotation on" step — querying the rule
+    // (rather than reading Store.shared.rule() once) makes the checkmark flip
+    // live the moment rotation is enabled from anywhere.
+    @Query private var rules: [RotationRule]
     @State private var engine = RotationEngine.shared
     @State private var applier = WallpaperApplier.shared
     /// Luminance (0..1) of the wallpaper region directly behind the metadata
     /// card. Computed off-main from the cached local image whenever `current`
     /// changes. Drives the card's light/dark glass + text colors.
     @State private var cardBackdropLuminance: Double = 0.2
+    /// Pre-decoded wallpaper for the background, loaded off-main in the
+    /// `.task(id:)` below. Decoding a multi-MB JPEG with `NSImage(contentsOf:)`
+    /// directly in `body` ran file I/O + decode on the main actor on every
+    /// render — a visible hitch on each rotation.
+    @State private var backgroundImage: NSImage?
+    @State private var backgroundImageID: String?
 
     private var current: Photo? {
         seenPhotos.first(where: { $0.lastSeenAt != nil })
     }
 
     private var isDarkBackdrop: Bool { cardBackdropLuminance < 0.5 }
+
+    /// Whether an Unsplash Access Key is stored. Read live so the checklist's
+    /// first step checks off as soon as the user saves a key in Connections
+    /// and returns to this tab.
+    private var hasUnsplashKey: Bool {
+        (KeychainService.shared.get(.unsplashAccessKey)?.isEmpty == false)
+    }
+
+    /// Turn on automatic rotation from the checklist without a trip to the
+    /// Schedule tab — flips the persisted rule and starts the engine, exactly
+    /// what the Schedule toggle and menu-bar Resume do.
+    private func enableRotation() {
+        let rule = Store.shared.rule()
+        rule.enabled = true
+        try? Store.shared.context.save()
+        engine.start()
+    }
 
     var body: some View {
         ZStack {
@@ -56,6 +83,7 @@ struct NowView: View {
                 }
             }
             .task(id: current?.unsplashID) {
+                await loadBackgroundImage()
                 await updateBackdropLuminance()
             }
         .toolbar {
@@ -123,25 +151,42 @@ struct NowView: View {
         cardBackdropLuminance = lum
     }
 
+    /// Decode the current photo's cached file off-main and publish it for the
+    /// background. Prefer the local cache copy — by the time the user sees
+    /// this view we've already downloaded the bytes for the rotation, so
+    /// hitting Unsplash again on every photo change is wasted network. The
+    /// AsyncImage fallback in `background` covers cache misses (first launch,
+    /// user-evicted, mirrored-from-iCloud-but-not-yet-downloaded).
+    private func loadBackgroundImage() async {
+        guard let photo = current else {
+            backgroundImage = nil
+            backgroundImageID = nil
+            return
+        }
+        guard backgroundImageID != photo.unsplashID else { return }
+        let cachedURL = ImageCache.shared.fileURL(for: photo.unsplashID)
+        let image = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+            guard FileManager.default.fileExists(atPath: cachedURL.path) else { return nil }
+            return NSImage(contentsOf: cachedURL)
+        }.value
+        backgroundImage = image
+        backgroundImageID = image != nil ? photo.unsplashID : nil
+    }
+
     @ViewBuilder
     private var background: some View {
         if let photo = current {
-            // Prefer the local cache copy. By the time the user sees this
-            // view we've already downloaded the bytes for the rotation, so
-            // hitting Unsplash again on every photo change is wasted network
-            // and breaks the crossfade (AsyncImage shows its placeholder
-            // mid-fade until the new download finishes). Fall back to the
-            // Unsplash URL only when the cache is missing — first launch,
-            // user-evicted, mirrored-from-iCloud-but-not-yet-downloaded.
-            let cachedURL = ImageCache.shared.fileURL(for: photo.unsplashID)
-            if FileManager.default.fileExists(atPath: cachedURL.path),
-               let nsImage = NSImage(contentsOf: cachedURL) {
+            if let nsImage = backgroundImage, backgroundImageID == photo.unsplashID {
                 Image(nsImage: nsImage)
                     .resizable()
                     .scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
                     .ignoresSafeArea()
+            } else if ImageCache.shared.exists(photo.unsplashID) {
+                // Cached file is being decoded off-main — show the gradient for
+                // a frame or two rather than kicking off a redundant download.
+                PlaceholderGradient().ignoresSafeArea()
             } else if let url = photo.regularURL {
                 AsyncImage(url: url) { phase in
                     switch phase {
@@ -161,27 +206,12 @@ struct NowView: View {
             PlaceholderGradient()
                 .ignoresSafeArea()
                 .overlay {
-                    VStack(spacing: 16) {
-                        Image(systemName: "photo.stack")
-                            .font(.system(size: 52, weight: .ultraLight))
-                            .foregroundStyle(.white.opacity(0.8))
-                        VStack(spacing: 4) {
-                            Text("No wallpaper yet")
-                                .font(.title3.weight(.medium))
-                                .foregroundStyle(.white)
-                            Text("Add your Unsplash Access Key in Settings → Connections,\nthen pick a photo in Discover.")
-                                .font(.callout)
-                                .foregroundStyle(.white.opacity(0.75))
-                                .multilineTextAlignment(.center)
-                        }
-                        SettingsLink {
-                            Label("Open Settings", systemImage: "gearshape")
-                        }
-                        .buttonStyle(.glassProminent)
-                        .controlSize(.large)
-                        .padding(.top, 8)
-                    }
-                    .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 2)
+                    OnboardingChecklist(
+                        hasUnsplashKey: hasUnsplashKey,
+                        rotationOn: rules.first?.enabled ?? false,
+                        onEnableRotation: enableRotation,
+                        onRotateNow: { Task { await engine.rotateNow() } }
+                    )
                 }
         }
     }
@@ -385,6 +415,118 @@ enum BackdropLuminanceSampler {
             // wallpapers as "lighter than they look."
             return 0.2126 * r + 0.7152 * g + 0.0722 * b
         }.value
+    }
+}
+
+/// First-run guide shown over the placeholder gradient until the first photo
+/// is applied. Replaces the old static "go to Connections, then Discover"
+/// text — which sent users bouncing between two Settings tabs — with a live
+/// three-step checklist whose rows check off as each prerequisite is met and
+/// whose buttons deep-link or act directly.
+private struct OnboardingChecklist: View {
+    let hasUnsplashKey: Bool
+    let rotationOn: Bool
+    let onEnableRotation: () -> Void
+    let onRotateNow: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            VStack(spacing: 8) {
+                Image(systemName: "photo.stack")
+                    .font(.system(size: 46, weight: .ultraLight))
+                    .foregroundStyle(.white.opacity(0.85))
+                Text("Welcome to paperpaper")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text("Three quick steps to your first wallpaper.")
+                    .font(.callout)
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                ChecklistRow(
+                    step: 1,
+                    done: hasUnsplashKey,
+                    title: "Add your Unsplash Access Key",
+                    subtitle: "Free, takes a minute — paste it in Connections.",
+                    actionLabel: "Open Connections",
+                    actionEnabled: true,
+                    action: {
+                        MainWindowState.shared.settingsSection = .connections
+                        MainWindowState.shared.mode = .settings
+                    }
+                )
+                ChecklistRow(
+                    step: 2,
+                    done: rotationOn,
+                    title: "Turn on automatic rotation",
+                    subtitle: "A fresh photo for your location, on your schedule.",
+                    actionLabel: "Enable",
+                    actionEnabled: hasUnsplashKey,
+                    action: onEnableRotation
+                )
+                ChecklistRow(
+                    step: 3,
+                    done: false,
+                    title: "Load your first photo now",
+                    subtitle: "Optional — or just wait for the next rotation.",
+                    actionLabel: "Rotate now",
+                    actionEnabled: hasUnsplashKey,
+                    action: onRotateNow
+                )
+            }
+            .frame(maxWidth: 420)
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.black.opacity(0.28))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 0.75)
+            )
+        }
+        .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 2)
+        .padding(40)
+    }
+}
+
+private struct ChecklistRow: View {
+    let step: Int
+    let done: Bool
+    let title: String
+    let subtitle: String
+    let actionLabel: String
+    let actionEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: done ? "checkmark.circle.fill" : "\(step).circle")
+                .font(.system(size: 22))
+                .foregroundStyle(done ? AnyShapeStyle(.green) : AnyShapeStyle(.white.opacity(0.7)))
+                .symbolRenderingMode(.hierarchical)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white)
+                    .strikethrough(done, color: .white.opacity(0.6))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+
+            Spacer(minLength: 8)
+
+            if !done {
+                Button(actionLabel, action: action)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.regular)
+                    .disabled(!actionEnabled)
+            }
+        }
+        .opacity(done ? 0.7 : 1)
     }
 }
 

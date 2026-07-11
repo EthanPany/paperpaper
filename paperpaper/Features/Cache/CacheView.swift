@@ -9,9 +9,8 @@ struct DataView: View {
 }
 
 struct CachePane: View {
-    @AppStorage("cache.maxSizeMB") private var maxSizeMB: Double = 0
-    @AppStorage("cache.prefetchCount") private var prefetchCount: Int = 3
-    @AppStorage("cache.keepOnlyReferences") private var keepOnlyReferences: Bool = true
+    @AppStorage("cache.maxImages") private var maxImages: Int = WallpaperApplier.defaultMaxCachedImages
+    @AppStorage("cache.prefetchCount") private var prefetchCount: Int = 0
 
     #if os(macOS)
     @StateObject private var loginItem = LoginItemController.shared
@@ -45,28 +44,32 @@ struct CachePane: View {
             #endif
 
             Section("Storage") {
-                Stepper(value: Binding(
-                    get: { Int(maxSizeMB) },
-                    set: { maxSizeMB = Double($0) }
-                ), in: 0...10000, step: 50) {
+                Stepper(value: $maxImages, in: 1...200) {
                     HStack {
-                        Text("Max size")
+                        Text("Max images")
                         Spacer()
-                        Text(maxSizeMB == 0 ? "Off" : "\(Int(maxSizeMB)) MB")
+                        Text("\(maxImages)")
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
                 }
+                Text("Keeps the \(maxImages) most-recent wallpaper images on disk for offline use, then drops the oldest. With \u{201C}No repeats\u{201D} on, every rotation downloads a fresh photo anyway, so the cache stays small. Photo details stay in the library either way — a photo is never re-described if it comes back around.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Stepper(value: $prefetchCount, in: 0...10) {
                     HStack {
                         Text("Pre-fetch next")
                         Spacer()
-                        Text("\(prefetchCount)")
+                        Text(prefetchCount == 0 ? "Off" : "\(prefetchCount)")
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
                 }
-                Toggle("Keep only references after rotation", isOn: $keepOnlyReferences)
+                Text(prefetchCount == 0
+                     ? "Off — every rotation grabs one fresh photo for your current location."
+                     : "Warms the next \(prefetchCount) photo(s) in the background. Higher values can serve older, less location-specific photos.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Stats") {

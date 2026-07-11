@@ -52,22 +52,48 @@ enum ArchitectureAgent {
     }
 
     /// Top-level entry. Pass the original image URL so the model can SEE it.
-    static func confirm(for photo: Photo, imageFileURL: URL?) async -> Confirmed? {
+    ///
+    /// `searchQuery` / `searchWasLocationBiased` describe HOW this photo was
+    /// surfaced (the Unsplash query the rotation engine used, and whether that
+    /// query was biased toward the user's area or a worldwide topic fallback).
+    /// This is the missing context that stops the agent guessing a famous
+    /// landmark from a silhouette: a photo from a *worldwide* "architecture"
+    /// search is almost certainly NOT near the user, so the agent is told to
+    /// stay generic instead of inventing a place.
+    static func confirm(
+        for photo: Photo,
+        imageFileURL: URL?,
+        searchQuery: String? = nil,
+        searchWasLocationBiased: Bool = false
+    ) async -> Confirmed? {
+        // Geographic anchor for the photo: EXIF GPS first (exact capture
+        // point), else the Unsplash API's photo coordinates. Unsplash strips
+        // GPS from most downloads, so the API position is what usually fires.
         let gps: (lat: Double, lon: Double)?
         if let lat = photo.exif?.latitude, let lon = photo.exif?.longitude {
+            gps = (lat, lon)
+        } else if let lat = photo.locationLatitude, let lon = photo.locationLongitude {
             gps = (lat, lon)
         } else {
             gps = nil
         }
 
-        let initialNearby = await mapkitSearch(query: "landmark", at: gps, radius: 800)
+        // Only pre-search landmarks when the PHOTO has coordinates. Without a
+        // region, MKLocalSearch centers on the *user's* current location — the
+        // resulting POIs would be presented to the model as photo metadata and
+        // localize a photo of Madrid to the user's home town.
+        let initialNearby = gps != nil ? await mapkitSearch(query: "landmark", at: gps, radius: 800) : []
         let area = photo.areaText.isEmpty ? nil : photo.areaText
 
-        log.info("agent start: gps=\(gps == nil ? "no" : "yes", privacy: .public) area=\(area ?? "-", privacy: .public) initialNearby=\(initialNearby.count, privacy: .public) image=\(imageFileURL?.path ?? "-", privacy: .public)")
+        // Where the USER is — context only, never treated as the photo's
+        // location. Cheap read (no live GPS fix); rotation just refreshed it.
+        let userRegion = LocationService.shared.cachedRegion?.displayName
+
+        log.info("agent start: gps=\(gps == nil ? "no" : "yes", privacy: .public) area=\(area ?? "-", privacy: .public) initialNearby=\(initialNearby.count, privacy: .public) query=\(searchQuery ?? "-", privacy: .public) localBias=\(searchWasLocationBiased, privacy: .public) userRegion=\(userRegion ?? "-", privacy: .public) image=\(imageFileURL?.path ?? "-", privacy: .public)")
 
         let imageB64: String?
         if let imageFileURL {
-            imageB64 = OllamaService.imageBase64(from: imageFileURL, maxDimension: 768)
+            imageB64 = await OllamaService.imageBase64(from: imageFileURL, maxDimension: 768)
             if imageB64 == nil {
                 log.error("agent: failed to load image from \(imageFileURL.path, privacy: .public)")
             }
@@ -86,7 +112,15 @@ enum ArchitectureAgent {
         ))
         messages.append(OllamaChatMessage(
             role: "user",
-            content: userPrompt(photo: photo, area: area, gps: gps, initialNearby: initialNearby),
+            content: userPrompt(
+                photo: photo,
+                area: area,
+                gps: gps,
+                initialNearby: initialNearby,
+                userRegion: userRegion,
+                searchQuery: searchQuery,
+                searchWasLocationBiased: searchWasLocationBiased
+            ),
             images: imageB64.map { [$0] },
             tool_calls: nil,
             tool_name: nil
@@ -307,6 +341,26 @@ enum ArchitectureAgent {
              you don't know — DO NOT pad with invented facts.
 
         5) Tool use: at most 2 lookups before committing. Don't loop.
+           Do NOT run a mapkit_search on a vague VISUAL description ("building
+           with a large white dome", "tall glass tower") hoping it identifies a
+           landmark — that returns coincidental matches you'll mistake for the
+           real subject. Only search names or text you actually READ in the image
+           or metadata.
+
+        6) NO METADATA + NO READABLE SIGN = STAY GENERIC. NEVER GUESS A LANDMARK.
+           If the photo has no location, no GPS, no description, no tags, AND you
+           cannot read an unambiguous identifying sign in the image, you MUST:
+             • set building_name = null,
+             • describe the scene by what is visible (form, materials, light),
+             • give location as a generic descriptor (or the broad region only
+               when the search was location-biased) — NEVER a guessed city.
+           A famous-looking silhouette is not identification. A white dome is not
+           "the White House"; a glass pyramid is not "the Louvre". Guessing a
+           named landmark from shape alone is the single worst failure here —
+           being correctly generic always beats being confidently wrong. Also
+           remember (rule 2): `location` is a GEOGRAPHIC place, never a building
+           name — "White House" belongs in building_name (if confirmed), never
+           in location.
 
         ============================================================
         OUTPUT SHAPE (commit_enrichment — exactly these 5 keys)
@@ -342,7 +396,7 @@ enum ArchitectureAgent {
         """
     }
 
-    private static func userPrompt(photo: Photo, area: String?, gps: (lat: Double, lon: Double)?, initialNearby: [NearbyPOI]) -> String {
+    private static func userPrompt(photo: Photo, area: String?, gps: (lat: Double, lon: Double)?, initialNearby: [NearbyPOI], userRegion: String?, searchQuery: String?, searchWasLocationBiased: Bool) -> String {
         // Lead with photo metadata as authoritative ground truth — the prior
         // structure (instructions on top, metadata at the tail) caused the
         // model to anchor on the few-shot examples instead of the photo's
@@ -363,21 +417,65 @@ enum ArchitectureAgent {
             lines.append("Location string: (unknown)")
         }
         if let gps {
-            lines.append("EXIF GPS: \(String(format: "%.4f, %.4f", gps.lat, gps.lon))")
+            let source = (photo.exif?.latitude != nil) ? "EXIF" : "Unsplash"
+            lines.append("Photo coordinates (\(source)): \(String(format: "%.4f, %.4f", gps.lat, gps.lon))")
         } else {
-            lines.append("EXIF GPS: (none)")
+            lines.append("Photo coordinates: (none)")
+        }
+        if let takenAt = photo.exif?.takenAt {
+            // Capture time anchors the photo's time of day — lets the blurbs
+            // say "at dusk" / "in morning light" from data instead of guessing
+            // from exposure. Local-time EXIF, so present it without a zone.
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            fmt.dateFormat = "yyyy-MM-dd HH:mm"
+            lines.append("Captured (EXIF, camera local time): \(fmt.string(from: takenAt))")
         }
         if !initialNearby.isEmpty {
-            lines.append("Nearby landmarks (Apple Maps, ~800m radius around EXIF):")
+            lines.append("Nearby landmarks (Apple Maps, ~800m radius around the photo's coordinates):")
             for poi in initialNearby.prefix(8) {
                 let dist = poi.distanceMeters.map { String(format: "%.0fm", $0) } ?? "?"
                 let cat = poi.category ?? "poi"
                 lines.append("  - \(poi.name) [\(cat)] \(dist)")
             }
         }
+        // Search provenance + user location. This is CONTEXT, never ground
+        // truth about the photo. Its main job: tell the model when a photo is a
+        // worldwide fallback (→ don't localize it to anywhere specific) vs a
+        // location-biased result (→ the user's area is a plausible-but-unconfirmed
+        // hint). Without this the model fills the vacuum by guessing a landmark.
+        lines.append("")
+        lines.append("=== SEARCH PROVENANCE (context only — NOT proof of the photo's location) ===")
+        if let searchQuery, !searchQuery.isEmpty {
+            lines.append("Unsplash query that surfaced this photo: \"\(searchQuery)\"")
+            if searchWasLocationBiased {
+                lines.append("This query was biased toward the user's area, so the photo MIGHT be near them — but only believe that if the image or the metadata above actually agree. Unsplash keyword search is loose; a keyword match is not a confirmed location.")
+            } else {
+                lines.append("This was a WORLDWIDE topic search (no place name in the query). The photo could be from anywhere on Earth and is almost certainly NOT near the user — do NOT place it in the user's city/region.")
+            }
+        } else {
+            lines.append("Search query: (unknown)")
+        }
+        if let userRegion, !userRegion.isEmpty {
+            lines.append("The user is viewing from: \(userRegion). This is where the PERSON is, NOT where the photo was taken. Never localize the photo to this place unless the image/metadata independently support it.")
+        }
+
+        // Did we hand the model ANY anchor (coords, area string, description,
+        // tags)? If not, it must stay generic instead of guessing a landmark.
+        let hasAnchor = gps != nil
+            || (area?.isEmpty == false)
+            || ((photo.photoDescription ?? photo.altDescription)?.isEmpty == false)
+            || !photo.tags.isEmpty
+
         lines.append("")
         lines.append("=== TASK ===")
-        lines.append("Identify the place in the attached photo. Your `location` and `building_name` MUST be consistent with the metadata above — if the metadata says one country/city, your answer must be in that country/city. Do not propose a venue from a different country no matter how visually familiar the building seems.")
+        if hasAnchor {
+            lines.append("Identify the place in the attached photo. Your `location` and `building_name` MUST be consistent with the metadata above — if the metadata says one country/city, your answer must be in that country/city. Do not propose a venue from a different country no matter how visually familiar the building seems.")
+        } else {
+            // The "White House at Catalina" failure mode: zero metadata + a
+            // worldwide photo → the model guessed a famous landmark from a dome.
+            lines.append("⚠️ This photo has NO location, NO GPS, NO description, and NO tags. You are working from the pixels alone. UNLESS you can read an unambiguous identifying SIGN in the image, you MUST stay generic: set `building_name` to null, describe the scene by what is visible (materials, form, light), and give `location` as a generic scene descriptor — do NOT name a famous building or city from shape alone. A white dome is NOT automatically the White House or a Capitol. Being correctly generic beats being confidently wrong.")
+        }
         lines.append("")
         lines.append("Step 1 — scan the image for visible text (marquees, inscriptions, station boards, shopfronts, awnings). List the 1–3 most distinctive strings.")
         lines.append("Step 2 — use those strings as `mapkit_search` / `web_search` queries IF you need to nail down the specific subject. Constrain searches to the metadata's city/country whenever possible (e.g. `mapkit_search(query: \"Casa Batlló Barcelona\")`).")
@@ -502,44 +600,56 @@ enum ArchitectureAgent {
         guard let parsed = args?.decode(Args.self) else {
             return "{\"error\":\"could not parse web_search args\"}"
         }
-        // Delegate to Ollama's hosted web search via a single-message chat
-        // call with `tools: [web_search]`. The model should return search
-        // results in its content. Simpler than implementing a separate
-        // search endpoint.
+        // Ollama's hosted web-search REST API (ollama.com account key). The
+        // previous implementation POSTed /api/generate with a `tools` field —
+        // which that endpoint silently ignores, so the "search result" was the
+        // model answering from its own weights: hallucinations dressed up as
+        // search output. This is a real search.
+        guard let key = KeychainService.shared.get(.ollamaAuthHeader), !key.isEmpty else {
+            return "{\"error\":\"web_search unavailable (no API key)\"}"
+        }
         do {
-            // Use the generate API with web_search tool — same as the legacy path.
-            let url = try OllamaService.shared.baseURLForExternal().appending(path: "/api/generate")
-            let body: [String: Any] = [
-                "model": OllamaService.shared.modelForExternal(),
-                "prompt": "Search the web for: \(parsed.query). Return a brief factual summary.",
-                "stream": false,
-                "tools": [["type": "web_search"]],
-                "options": ["temperature": 0.1]
-            ]
+            let url = URL(string: "https://ollama.com/api/web_search")!
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
-            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            req.httpBody = try JSONSerialization.data(withJSONObject: [
+                "query": parsed.query,
+                "max_results": 4,
+            ])
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if let auth = OllamaService.shared.authorizationHeaderForExternal() {
-                req.setValue(auth, forHTTPHeaderField: "Authorization")
-            }
+            let auth = key.lowercased().hasPrefix("bearer ") ? key : "Bearer \(key)"
+            req.setValue(auth, forHTTPHeaderField: "Authorization")
             let cfg = URLSessionConfiguration.ephemeral
-            cfg.timeoutIntervalForRequest = 45
-            let (data, _) = try await URLSession(configuration: cfg).data(for: req)
-            struct R: Decodable { let response: String }
-            let r = try JSONDecoder().decode(R.self, from: data)
-            log.info("agent tool web_search query=\(parsed.query, privacy: .public)")
-            return "{\"summary\": \(jsonString(r.response))}"
+            cfg.timeoutIntervalForRequest = 30
+            let (data, response) = try await URLSession(configuration: cfg).data(for: req)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                log.error("agent tool web_search HTTP \(status, privacy: .public)")
+                return "{\"error\":\"web_search returned HTTP \(status)\"}"
+            }
+            struct SearchResponse: Decodable {
+                struct Result: Decodable { let title: String?; let url: String?; let content: String? }
+                let results: [Result]
+            }
+            let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
+            // Trim each result so a long article doesn't blow up the context.
+            let payload: [String: Any] = [
+                "query": parsed.query,
+                "results": decoded.results.prefix(4).map { r -> [String: Any] in
+                    var d: [String: Any] = [:]
+                    if let t = r.title { d["title"] = t }
+                    if let u = r.url { d["url"] = u }
+                    if let c = r.content { d["content"] = String(c.prefix(700)) }
+                    return d
+                },
+            ]
+            let json = String(data: (try? JSONSerialization.data(withJSONObject: payload)) ?? Data(), encoding: .utf8) ?? "{}"
+            log.info("agent tool web_search query=\(parsed.query, privacy: .public) results=\(decoded.results.count, privacy: .public)")
+            return json
         } catch {
             log.error("agent tool web_search failed: \(error.localizedDescription, privacy: .public)")
             return "{\"error\":\"web_search failed: \(error.localizedDescription)\"}"
         }
-    }
-
-    private static func jsonString(_ s: String) -> String {
-        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
-        let trimmed = String(data: data, encoding: .utf8) ?? "\"\""
-        return String(trimmed.dropFirst().dropLast())
     }
 
     private static func toolResultMessage(name: String, json: String) -> OllamaChatMessage {

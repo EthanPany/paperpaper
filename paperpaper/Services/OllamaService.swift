@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import os
 #if canImport(AppKit)
 import AppKit
@@ -65,6 +66,21 @@ final class OllamaService {
     static let shared = OllamaService()
 
     func ping() async -> Bool {
+        // OpenAI-compatible: a GET /models with the API key is the cheapest
+        // reachability + auth check.
+        if AIProvider.current == .openAICompatible {
+            guard let base = try? openAIBaseURL() else { return false }
+            var req = URLRequest(url: base.appending(path: "/models"))
+            if let auth = openAIAuthHeader() {
+                req.setValue(auth, forHTTPHeaderField: "Authorization")
+            }
+            do {
+                let (_, response) = try await URLSession.shared.data(for: req)
+                return (response as? HTTPURLResponse)?.statusCode == 200
+            } catch {
+                return false
+            }
+        }
         guard let base = try? baseURL() else { return false }
         var req = URLRequest(url: base.appending(path: "/api/tags"))
         if let auth = authorizationHeader() {
@@ -78,8 +94,11 @@ final class OllamaService {
         }
     }
 
-    /// List local models via /api/tags.
+    /// List available models. Ollama → /api/tags; OpenAI-compatible → /models.
     func listModels() async throws -> [String] {
+        if AIProvider.current == .openAICompatible {
+            return try await listOpenAIModels()
+        }
         let url = try baseURL().appending(path: "/api/tags")
         var req = URLRequest(url: url)
         if let auth = authorizationHeader() {
@@ -100,6 +119,29 @@ final class OllamaService {
         struct Model: Decodable { let name: String }
         let parsed = try JSONDecoder().decode(Tags.self, from: data)
         return parsed.models.map(\.name).sorted()
+    }
+
+    private func listOpenAIModels() async throws -> [String] {
+        let url = try openAIBaseURL().appending(path: "/models")
+        var req = URLRequest(url: url)
+        if let auth = openAIAuthHeader() {
+            req.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw OllamaError.transport(error)
+        }
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw OllamaError.http(status: status, body: String(data: data, encoding: .utf8) ?? "")
+        }
+        struct List: Decodable { let data: [Model] }
+        struct Model: Decodable { let id: String }
+        let parsed = try JSONDecoder().decode(List.self, from: data)
+        return parsed.data.map(\.id).sorted()
     }
 
     private func baseURL() throws -> URL {
@@ -143,9 +185,16 @@ struct OllamaChatMessage: Codable, Sendable {
     var images: [String]?             // base64 JPEG/PNG strings (no data: prefix)
     var tool_calls: [OllamaToolCall]?
     var tool_name: String?            // role=="tool" — which tool this result is for
+    /// OpenAI-compatible only: the `tool_call_id` a tool result answers. Unused
+    /// by the Ollama path (which keys results by `tool_name`). Defaulted so
+    /// existing call sites don't change.
+    var tool_call_id: String? = nil
 }
 
 struct OllamaToolCall: Codable, Sendable {
+    /// OpenAI-compatible only: the call id used to pair an assistant tool_call
+    /// with its tool result. nil on the Ollama path (Ollama omits it).
+    var id: String? = nil
     let function: Function
     struct Function: Codable, Sendable {
         let name: String
@@ -315,10 +364,21 @@ extension OllamaService {
     func modelForExternal() -> String { model() }
     func authorizationHeaderForExternal() -> String? { authorizationHeader() }
 
-    /// Send a chat completion through /api/chat. Supports vision input via
-    /// `images` on user messages and tool calling via `tools`. Returns the
-    /// assistant's reply (which may include `tool_calls`).
+    /// Send a chat completion to whichever provider is configured. Supports
+    /// vision input via `images` on user messages and tool calling via `tools`.
+    /// Returns the assistant's reply (which may include `tool_calls`).
+    /// ArchitectureAgent calls this unchanged regardless of provider.
     func chat(messages: [OllamaChatMessage], tools: [OllamaToolSpec] = [], temperature: Double = 0.2) async throws -> OllamaChatMessage {
+        switch AIProvider.current {
+        case .ollama:
+            return try await chatOllama(messages: messages, tools: tools, temperature: temperature)
+        case .openAICompatible:
+            return try await chatOpenAI(messages: messages, tools: tools, temperature: temperature)
+        }
+    }
+
+    /// Send a chat completion through Ollama's /api/chat.
+    private func chatOllama(messages: [OllamaChatMessage], tools: [OllamaToolSpec] = [], temperature: Double = 0.2) async throws -> OllamaChatMessage {
         let url = try baseURL().appending(path: "/api/chat")
 
         var body: [String: Any] = [
@@ -418,34 +478,212 @@ extension OllamaService {
         }
     }
 
-    /// Load an image, downscale to fit within `maxDimension`, JPEG-encode,
-    /// and base64-encode for vision input. Vision models choke on multi-MB
-    /// images and we don't need full resolution to identify a building.
-    static func imageBase64(from fileURL: URL, maxDimension: CGFloat = 768) -> String? {
-        #if canImport(AppKit)
-        guard let nsImage = NSImage(contentsOf: fileURL) else { return nil }
-        let originalSize = nsImage.size
-        guard originalSize.width > 0, originalSize.height > 0 else { return nil }
+    // MARK: - OpenAI-compatible provider
 
-        let scale = min(1.0, maxDimension / max(originalSize.width, originalSize.height))
-        let newSize = NSSize(width: originalSize.width * scale, height: originalSize.height * scale)
+    private func openAIBaseURL() throws -> URL {
+        let raw = (UserDefaults.standard.string(forKey: AIProvider.Keys.openAIBaseURL) ?? AIProvider.defaultOpenAIBaseURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Tolerate a trailing slash so "…/v1/" and "…/v1" both work.
+        let cleaned = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        guard !cleaned.isEmpty, let url = URL(string: cleaned) else { throw OllamaError.missingURL }
+        return url
+    }
 
-        let resized = NSImage(size: newSize)
-        resized.lockFocus()
-        nsImage.draw(in: NSRect(origin: .zero, size: newSize),
-                     from: NSRect(origin: .zero, size: originalSize),
-                     operation: .copy,
-                     fraction: 1.0)
-        resized.unlockFocus()
+    private func openAIModel() -> String {
+        let m = (UserDefaults.standard.string(forKey: AIProvider.Keys.openAIModel) ?? "").trimmingCharacters(in: .whitespaces)
+        return m.isEmpty ? AIProvider.defaultOpenAIModel : m
+    }
 
-        guard let tiff = resized.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else {
-            return nil
+    private func openAIAuthHeader() -> String? {
+        guard let key = KeychainService.shared.get(.openAIAPIKey), !key.isEmpty else { return nil }
+        if key.lowercased().hasPrefix("bearer ") { return key }
+        return "Bearer \(key)"
+    }
+
+    /// Convert our internal message list into the OpenAI `/chat/completions`
+    /// shape. Two structural differences from Ollama are handled here:
+    ///   • images ride inside a `content` array as `image_url` data: URLs
+    ///     rather than a sibling `images` array of bare base64.
+    ///   • tool results must reference the assistant tool_call's `id` via
+    ///     `tool_call_id`. The agent keys results by tool *name*, so we pair
+    ///     each result with the most recent unmatched call of that name.
+    private func openAIMessages(from messages: [OllamaChatMessage]) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        // FIFO of (id, name) from the latest assistant turn awaiting results.
+        var pendingCalls: [(id: String, name: String)] = []
+
+        for m in messages {
+            switch m.role {
+            case "tool":
+                var d: [String: Any] = ["role": "tool", "content": m.content]
+                // Prefer an explicit id; else match by name; else first pending.
+                if let explicit = m.tool_call_id {
+                    d["tool_call_id"] = explicit
+                } else if let idx = pendingCalls.firstIndex(where: { $0.name == m.tool_name }) {
+                    d["tool_call_id"] = pendingCalls[idx].id
+                    pendingCalls.remove(at: idx)
+                } else if !pendingCalls.isEmpty {
+                    d["tool_call_id"] = pendingCalls.removeFirst().id
+                }
+                out.append(d)
+
+            case "assistant" where (m.tool_calls?.isEmpty == false):
+                pendingCalls.removeAll()
+                var calls: [[String: Any]] = []
+                for (i, tc) in (m.tool_calls ?? []).enumerated() {
+                    let id = tc.id ?? "call_\(out.count)_\(i)"
+                    let argsString: String
+                    if let raw = tc.function.arguments?.raw, !raw.isEmpty {
+                        argsString = String(data: raw, encoding: .utf8) ?? "{}"
+                    } else {
+                        argsString = "{}"
+                    }
+                    calls.append([
+                        "id": id,
+                        "type": "function",
+                        "function": ["name": tc.function.name, "arguments": argsString],
+                    ])
+                    pendingCalls.append((id: id, name: tc.function.name))
+                }
+                // OpenAI accepts null content alongside tool_calls.
+                out.append(["role": "assistant", "content": m.content, "tool_calls": calls])
+
+            default:
+                if let images = m.images, !images.isEmpty {
+                    var parts: [[String: Any]] = [["type": "text", "text": m.content]]
+                    for b64 in images {
+                        parts.append([
+                            "type": "image_url",
+                            "image_url": ["url": "data:image/jpeg;base64,\(b64)"],
+                        ])
+                    }
+                    out.append(["role": m.role, "content": parts])
+                } else {
+                    out.append(["role": m.role, "content": m.content])
+                }
+            }
         }
-        return jpeg.base64EncodedString()
-        #else
-        return nil
-        #endif
+        return out
+    }
+
+    /// Send a chat completion through an OpenAI-compatible `/chat/completions`
+    /// endpoint. Mirrors `chatOllama`'s contract: returns the assistant message,
+    /// possibly carrying `tool_calls`.
+    private func chatOpenAI(messages: [OllamaChatMessage], tools: [OllamaToolSpec] = [], temperature: Double = 0.2) async throws -> OllamaChatMessage {
+        guard openAIAuthHeader() != nil else { throw OllamaError.missingAPIKey }
+        let url = try openAIBaseURL().appending(path: "/chat/completions")
+
+        var body: [String: Any] = [
+            "model": openAIModel(),
+            "temperature": temperature,
+            "messages": openAIMessages(from: messages),
+        ]
+        if !tools.isEmpty {
+            var toolsArr: [[String: Any]] = []
+            for t in tools {
+                let params: Any = (try? JSONSerialization.jsonObject(with: t.function.parameters.raw)) ?? [String: Any]()
+                toolsArr.append([
+                    "type": t.type,
+                    "function": [
+                        "name": t.function.name,
+                        "description": t.function.description,
+                        "parameters": params,
+                    ],
+                ])
+            }
+            body["tools"] = toolsArr
+        }
+
+        logJSONBody("openai chat request body", body)
+        let httpBody = try JSONSerialization.data(withJSONObject: body)
+        ollamaLog.notice("openai chat POST \(url.absoluteString, privacy: .public) bytes=\(httpBody.count, privacy: .public) toolCount=\(tools.count, privacy: .public) msgCount=\(messages.count, privacy: .public)")
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.httpBody = httpBody
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let auth = openAIAuthHeader() {
+            req.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = timeoutSeconds() * 3
+        cfg.timeoutIntervalForResource = timeoutSeconds() * 6
+        let session = URLSession(configuration: cfg)
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            ollamaLog.error("openai chat transport failed: \(error.localizedDescription, privacy: .public)")
+            throw OllamaError.transport(error)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw OllamaError.http(status: -1, body: "")
+        }
+        let bodyString = String(data: data, encoding: .utf8) ?? ""
+        ollamaLog.notice("openai chat response status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public)")
+        guard (200..<300).contains(http.statusCode) else {
+            let snippet = bodyString.count > 800 ? String(bodyString.prefix(800)) + "…" : bodyString
+            ollamaLog.error("openai chat HTTP \(http.statusCode, privacy: .public) body=\(snippet, privacy: .public)")
+            throw OllamaError.http(status: http.statusCode, body: bodyString)
+        }
+
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let message = first["message"] as? [String: Any] else {
+            throw OllamaError.emptyResponse
+        }
+
+        let content = (message["content"] as? String) ?? ""
+        var toolCalls: [OllamaToolCall]? = nil
+        if let rawCalls = message["tool_calls"] as? [[String: Any]], !rawCalls.isEmpty {
+            toolCalls = rawCalls.compactMap { call -> OllamaToolCall? in
+                guard let fn = call["function"] as? [String: Any],
+                      let name = fn["name"] as? String else { return nil }
+                let id = call["id"] as? String
+                // OpenAI hands arguments back as a JSON STRING; its bytes are
+                // already valid JSON for AnyJSON to carry.
+                let argsString = (fn["arguments"] as? String) ?? "{}"
+                let argsData = argsString.data(using: .utf8) ?? Data("{}".utf8)
+                return OllamaToolCall(id: id, function: .init(name: name, arguments: AnyJSON(raw: argsData)))
+            }
+        }
+
+        return OllamaChatMessage(role: "assistant", content: content, images: nil, tool_calls: toolCalls, tool_name: nil)
+    }
+
+    /// Load an image, downscale to fit within `maxDimension` PIXELS, JPEG-
+    /// encode, and base64-encode for vision input. Vision models choke on
+    /// multi-MB images and we don't need full resolution to identify a building.
+    ///
+    /// ImageIO thumbnailing, off the main actor, for two reasons:
+    ///   • The old NSImage/lockFocus path measured in POINTS — on a Retina Mac
+    ///     "768" produced a 1536-pixel bitmap, quadrupling the vision token
+    ///     cost without telling anyone.
+    ///   • Decoding + re-encoding a multi-MB wallpaper was running ON the main
+    ///     actor (ArchitectureAgent is @MainActor), hitching the UI at the
+    ///     start of every enrichment.
+    static func imageBase64(from fileURL: URL, maxDimension: CGFloat = 768) async -> String? {
+        await Task.detached(priority: .utility) { () -> String? in
+            guard let src = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
+            let thumbOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: Int(maxDimension),
+            ]
+            guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOptions as CFDictionary) else {
+                return nil
+            }
+            let out = NSMutableData()
+            guard let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else {
+                return nil
+            }
+            let jpegOptions: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.85]
+            CGImageDestinationAddImage(dest, cg, jpegOptions as CFDictionary)
+            guard CGImageDestinationFinalize(dest) else { return nil }
+            return (out as Data).base64EncodedString()
+        }.value
     }
 }

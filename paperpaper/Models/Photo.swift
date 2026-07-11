@@ -17,6 +17,12 @@ final class Photo {
     var locationName: String?
     var locationCity: String?
     var locationCountry: String?
+    /// Photo-subject coordinates from the Unsplash API (`location.position`).
+    /// Distinct from EXIF GPS — Unsplash strips GPS from most files, but the
+    /// API often still knows where the photo was taken. Feeds the enrichment
+    /// agent's geographic anchor when EXIF GPS is absent.
+    var locationLatitude: Double?
+    var locationLongitude: Double?
     var width: Int = 0
     var height: Int = 0
     var hexColor: String?
@@ -50,6 +56,8 @@ final class Photo {
         locationName: String? = nil,
         locationCity: String? = nil,
         locationCountry: String? = nil,
+        locationLatitude: Double? = nil,
+        locationLongitude: Double? = nil,
         width: Int,
         height: Int,
         hexColor: String? = nil,
@@ -70,6 +78,8 @@ final class Photo {
         self.locationName = locationName
         self.locationCity = locationCity
         self.locationCountry = locationCountry
+        self.locationLatitude = locationLatitude
+        self.locationLongitude = locationLongitude
         self.width = width
         self.height = height
         self.hexColor = hexColor

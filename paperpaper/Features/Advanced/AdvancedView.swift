@@ -87,8 +87,9 @@ struct AdvancedView: View {
     private func resetAllSettings() {
         let keys = [
             "log.level", "network.timeoutSeconds", "network.retryCount", "app.hideDockIcon",
-            "cache.maxSizeMB", "cache.prefetchCount", "cache.keepOnlyReferences",
+            "cache.maxImages", "cache.prefetchCount",
             "ollama.url", "ollama.model", "ollama.temperature", "ollama.timeoutSeconds",
+            "ai.provider", "openai.baseURL", "openai.model",
         ]
         for key in keys { UserDefaults.standard.removeObject(forKey: key) }
     }
@@ -115,8 +116,9 @@ struct AdvancedView: View {
     private func userDefaultsSnapshot() -> [String: Any] {
         let keys = [
             "log.level", "network.timeoutSeconds", "network.retryCount", "app.hideDockIcon",
-            "cache.maxSizeMB", "cache.prefetchCount", "cache.keepOnlyReferences",
+            "cache.maxImages", "cache.prefetchCount",
             "ollama.url", "ollama.model", "ollama.temperature", "ollama.timeoutSeconds",
+            "ai.provider", "openai.baseURL", "openai.model",
         ]
         var dict: [String: Any] = [:]
         for key in keys {

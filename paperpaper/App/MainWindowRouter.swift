@@ -20,6 +20,12 @@ enum WindowMode: String, CaseIterable, Identifiable {
 final class MainWindowState {
     static let shared = MainWindowState()
     var mode: WindowMode = .photo
+    /// Which tab the Settings pane shows. Hoisted here (rather than living as
+    /// `@State` inside SettingsPane) so other surfaces — notably the first-run
+    /// checklist in NowView — can deep-link straight to a specific tab, e.g.
+    /// "Open Connections" jumps to `.connections` instead of dumping the user
+    /// on the default Discover tab.
+    var settingsSection: SettingsPane.Section = .discover
     private init() {}
 }
 

@@ -16,8 +16,22 @@ final class RotationRule {
     var spaceModeRaw: String = SpaceMode.unified.rawValue
     var allowRepeats: Bool = false
     var repeatCooldownDays: Int = 30
-    var preferNearby: Bool = false
+    /// Bias each rotation's Unsplash query toward the user's current city /
+    /// country so the wallpaper reflects where you actually are. On by default
+    /// — this is the core "based on your location" behavior. Falls back to the
+    /// bare topic automatically when location is denied or unresolved, so it's
+    /// safe to default on even before the user grants permission.
+    var preferNearby: Bool = true
     var matchDaylight: Bool = false
+    /// Skip a scheduled rotation when there's no usable network path (fetching
+    /// from Unsplash would just error). On by default — it's strictly better
+    /// than burning a tick on a guaranteed failure. The engine retries shortly
+    /// after instead of waiting a whole interval.
+    var pauseWhenOffline: Bool = true
+    /// Skip a scheduled rotation while running on battery (power adapter
+    /// unplugged). Off by default — opt-in for users who want to conserve power
+    /// or cellular-tethered bandwidth.
+    var pauseOnBattery: Bool = false
     var updatedAt: Date = Date.distantPast
 
     init(
@@ -34,8 +48,10 @@ final class RotationRule {
         spaceMode: SpaceMode = .unified,
         allowRepeats: Bool = false,
         repeatCooldownDays: Int = 30,
-        preferNearby: Bool = false,
-        matchDaylight: Bool = false
+        preferNearby: Bool = true,
+        matchDaylight: Bool = false,
+        pauseWhenOffline: Bool = true,
+        pauseOnBattery: Bool = false
     ) {
         self.enabled = enabled
         self.scheduleModeRaw = scheduleMode.rawValue
@@ -52,6 +68,8 @@ final class RotationRule {
         self.repeatCooldownDays = repeatCooldownDays
         self.preferNearby = preferNearby
         self.matchDaylight = matchDaylight
+        self.pauseWhenOffline = pauseWhenOffline
+        self.pauseOnBattery = pauseOnBattery
         self.updatedAt = .now
     }
 

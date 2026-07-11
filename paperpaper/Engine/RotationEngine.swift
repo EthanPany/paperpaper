@@ -3,18 +3,78 @@ import Observation
 import SwiftData
 import CoreLocation
 import AppKit
+import os
 
 @MainActor
 @Observable
 final class RotationEngine {
     static let shared = RotationEngine()
 
+    @ObservationIgnored
+    private let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "rotation")
+
     private(set) var isRunning: Bool = false
     private(set) var lastError: String?
     private(set) var nextFireAt: Date?
 
+    /// Outcome of the most recent rotation attempt, for the Schedule → Status
+    /// debug panel. Lets the user see at a glance whether the last tick applied
+    /// a new photo, was skipped (and why), or failed (and why).
+    private(set) var lastTrigger: TriggerStatus?
+
+    struct TriggerStatus: Sendable {
+        enum Kind: Sendable { case rotated, skipped, failed }
+        let kind: Kind
+        /// Short human-readable detail, e.g. "On battery" or "No matching photos".
+        let detail: String
+        let at: Date
+
+        var label: String {
+            switch kind {
+            case .rotated: return "Rotated — \(detail)"
+            case .skipped: return "Skipped — \(detail)"
+            case .failed:  return "Failed — \(detail)"
+            }
+        }
+    }
+
+    private func record(_ kind: TriggerStatus.Kind, _ detail: String) {
+        lastTrigger = TriggerStatus(kind: kind, detail: detail, at: .now)
+    }
+
     private var loopTask: Task<Void, Never>?
     private var wakeObserver: NSObjectProtocol?
+
+    /// Outcome of a single `rotate()` attempt. `.skipped` means a guard
+    /// (offline / on battery) deferred the rotation — the loop then retries
+    /// after a short backoff WITHOUT advancing the schedule baseline, so the
+    /// wallpaper updates as soon as the blocking condition clears.
+    private enum RotateOutcome {
+        case rotated
+        case failed
+        case skipped(reason: String)
+    }
+
+    /// How long to wait before re-attempting a rotation that a guard skipped.
+    /// Short enough to feel responsive when you plug in / reconnect, long
+    /// enough not to spin.
+    private static let skipRetrySeconds: TimeInterval = 120
+
+    /// How long to wait before re-attempting a rotation that FAILED (Unsplash
+    /// 5xx, momentary DNS, a transient decode). Longer than the guard backoff
+    /// since a failure is less likely to clear in seconds, but far shorter than
+    /// a whole interval so a blip doesn't cost an hour of stale wallpaper.
+    private static let failureRetrySeconds: TimeInterval = 300
+
+    /// Cap on consecutive fast retries after a failure. Once exhausted the
+    /// failure is treated as persistent (bad key, no matching photos, an
+    /// Unsplash outage) and we advance the schedule baseline so the loop falls
+    /// back to the normal interval instead of re-fetching every 5 minutes
+    /// indefinitely. Reset on any successful rotation.
+    private static let maxFailureRetries = 3
+
+    /// Number of back-to-back `.failed` rotations since the last success.
+    private var consecutiveFailures = 0
 
     private init() {
         // Restart the loop when the Mac wakes from sleep. `Task.sleep` is
@@ -76,6 +136,15 @@ final class RotationEngine {
         stop()
         isRunning = true
         lastError = nil
+        // Prompt for location up front when a location-aware mode is on, so the
+        // permission dialog appears at the natural "I just turned on rotation"
+        // moment — not silently deferred to the first fetch (which would fall
+        // back to a worldwide query and never prompt at all if the status is
+        // undetermined). No-ops once the status is already determined.
+        let rule = Store.shared.rule()
+        if rule.preferNearby || rule.matchDaylight {
+            Task { await LocationService.shared.ensureAuthorized() }
+        }
         loopTask = Task { [weak self] in
             await self?.loop()
         }
@@ -102,7 +171,10 @@ final class RotationEngine {
     }
 
     func rotateNow() async {
-        await rotate()
+        // Manual rotation is an explicit user request — bypass the offline /
+        // battery guards. If there's genuinely no network the fetch fails and
+        // surfaces lastError, which is the honest outcome for a button press.
+        _ = await rotate(force: true)
         lastRotationAt = .now
     }
 
@@ -126,8 +198,11 @@ final class RotationEngine {
             let baseline = lastRotationAt ?? .now
             let nextScheduled = Scheduler.nextFire(for: initialRule, after: baseline)
             if nextScheduled <= .now {
-                await rotate()
-                lastRotationAt = .now
+                let outcome = await rotate()
+                // A guard-skipped catch-up must NOT advance the baseline, or
+                // we'd swallow the missed rotation entirely — leave it past-due
+                // so the loop below retries once the guard clears.
+                if case .skipped = outcome {} else { lastRotationAt = .now }
             }
         }
 
@@ -149,12 +224,40 @@ final class RotationEngine {
                 try? await Task.sleep(for: .seconds(interval))
                 if Task.isCancelled { return }
             }
-            await rotate()
-            lastRotationAt = .now
+            let outcome = await rotate()
+            switch outcome {
+            case .rotated:
+                consecutiveFailures = 0
+                lastRotationAt = .now
+            case .failed:
+                // A transient failure shouldn't cost a whole interval. Like the
+                // skip path, leave the baseline unadvanced (so the next nextFire
+                // is past-due) and back off briefly before retrying. Bound the
+                // fast retries: once exhausted, treat the failure as persistent,
+                // advance the baseline, and fall back to the normal schedule.
+                if consecutiveFailures < Self.maxFailureRetries {
+                    consecutiveFailures += 1
+                    nextFireAt = .now.addingTimeInterval(Self.failureRetrySeconds)
+                    try? await Task.sleep(for: .seconds(Self.failureRetrySeconds))
+                    if Task.isCancelled { return }
+                } else {
+                    consecutiveFailures = 0
+                    lastRotationAt = .now
+                }
+            case .skipped:
+                // Don't advance the baseline — the rotation is still "owed".
+                // Back off briefly, then loop: with the baseline unchanged the
+                // next nextFire is already past-due, so we re-attempt as soon
+                // as the backoff elapses (i.e. moments after reconnect / plug-in).
+                nextFireAt = .now.addingTimeInterval(Self.skipRetrySeconds)
+                try? await Task.sleep(for: .seconds(Self.skipRetrySeconds))
+                if Task.isCancelled { return }
+            }
         }
     }
 
-    private func rotate() async {
+    @discardableResult
+    private func rotate(force: Bool = false) async -> RotateOutcome {
         // First-run gate: refuse to rotate without an Unsplash key. The
         // search call below would fail anyway, but it would do so on every
         // schedule tick — burning network and cluttering Console logs.
@@ -162,14 +265,48 @@ final class RotationEngine {
         // red and the user knows where to go.
         guard let key = KeychainService.shared.get(.unsplashAccessKey), !key.isEmpty else {
             lastError = "Add an Unsplash Access Key in Settings → Connections."
-            return
+            record(.failed, "No Unsplash access key")
+            return .failed
         }
+
+        // Rotation guards — automatic rotations only (manual "Rotate now"
+        // passes force: true). Each sets a friendly lastError so the menu-bar
+        // status explains the pause, then returns .skipped so the loop retries
+        // soon instead of consuming the scheduled slot.
+        if !force {
+            let guardRule = Store.shared.rule()
+            if guardRule.pauseWhenOffline && !NetworkMonitor.shared.isConnected {
+                lastError = "Paused — no internet connection. Will resume when you're back online."
+                record(.skipped, "Offline")
+                return .skipped(reason: "offline")
+            }
+            if guardRule.pauseOnBattery && PowerService.isOnBattery {
+                lastError = "Paused — running on battery. Will resume when you plug in."
+                record(.skipped, "On battery")
+                return .skipped(reason: "battery")
+            }
+        }
+
         do {
             let rule = Store.shared.rule()
             let filters = Store.shared.filters()
             let baseTopic = filters.topics.randomElement() ?? "architecture"
-            let prefetchCount = UserDefaults.standard.object(forKey: "cache.prefetchCount") as? Int ?? 3
+            // Default 0: each rotation fetches exactly one fresh photo for the
+            // current-location query rather than serving from a pre-warmed
+            // pool. Pre-fetching is opt-in — a populated cache otherwise lets
+            // stale, non-local photos win the pick.
+            let prefetchCount = UserDefaults.standard.object(forKey: "cache.prefetchCount") as? Int ?? 0
             let recentIDs = rule.allowRepeats ? [] : recentlyShownIDs(cooldownDays: rule.repeatCooldownDays)
+
+            // How many candidates to pull per /photos/random call. The default
+            // is ONE — which starves the dedup filter: if that single random
+            // photo is in your cooldown window there's nothing else to pick, so
+            // we fall through to re-showing a least-recently-seen duplicate.
+            // When "no repeats" is on, pull a wider pool (~10) so an unseen
+            // photo is overwhelmingly likely on the first call. When repeats are
+            // allowed there's no reason to spend the extra Unsplash quota.
+            let dedupPoolSize = 10
+            let fetchCount = rule.allowRepeats ? (1 + prefetchCount) : max(1 + prefetchCount, dedupPoolSize)
 
             // Build the query ladder: when "prefer nearby" is on, try the
             // user's city/country first, then fall back to the bare topic
@@ -184,15 +321,29 @@ final class RotationEngine {
             // ladder instead of bubbling up.
             var pool: [UnsplashPhoto] = []
             var eligible: [UnsplashPhoto] = []
+            // The query rung that actually produced our candidates — passed to
+            // the enrichment agent as provenance so it can tell a worldwide
+            // fallback from a location-biased result (and stop guessing a
+            // landmark from a silhouette). Tracks the last query that returned
+            // anything, overwritten by the query that yields eligible photos.
+            var matchedQuery: String?
             outer: for query in queries {
                 for _ in 0..<3 {
                     do {
-                        let batch = try await UnsplashService.shared.random(query: query, count: 1 + prefetchCount)
-                        pool.append(contentsOf: batch)
+                        let batch = try await UnsplashService.shared.random(query: query, count: fetchCount)
+                        // /photos/random samples WITH replacement — consecutive
+                        // batches routinely repeat ids. Dedup so retries widen
+                        // the pool instead of re-counting the same photos.
+                        let known = Set(pool.map(\.id))
+                        pool.append(contentsOf: batch.filter { !known.contains($0.id) })
+                        if !batch.isEmpty { matchedQuery = query }
                         eligible = pool.filter { candidate in
                             acceptCandidate(candidate, filters: filters) && !recentIDs.contains(candidate.id)
                         }
-                        if !eligible.isEmpty { break outer }
+                        if !eligible.isEmpty { matchedQuery = query; break outer }
+                        // Empty batch = the query has no (more) photos; retrying
+                        // the same query only burns rate limit. Next rung.
+                        if batch.isEmpty { break }
                     } catch UnsplashError.http(let status, _) where status == 404 {
                         // No matches for this query — try the next one.
                         break
@@ -200,12 +351,15 @@ final class RotationEngine {
                 }
             }
 
-            // Match Daylight: instead of taking the first eligible candidate,
-            // score each one by (location-distance + brightness-vs-sun-altitude)
-            // and pick the highest. Falls back transparently when the user has
-            // no location or when candidates lack lat/lon or color hex.
-            let scored: UnsplashPhoto? = rule.matchDaylight
-                ? await pickByDaylightScore(in: eligible, rule: rule)
+            // Rank the eligible pool instead of taking the first hit:
+            //   • preferNearby → score by distance to the user (when both the
+            //     user and the candidate have coordinates).
+            //   • matchDaylight → additionally score brightness vs. the sun's
+            //     altitude. Falls back transparently when signals are missing.
+            // Force (manual "Rotate now") scores for *now*, not the next
+            // scheduled fire — the user is looking at the screen right now.
+            let scored: UnsplashPhoto? = (rule.preferNearby || rule.matchDaylight)
+                ? await pickBest(in: eligible, rule: rule, referenceTime: force ? .now : (nextFireAt ?? .now))
                 : eligible.first
 
             // Last-resort: if dedup blocked everything, fall back to the
@@ -216,7 +370,14 @@ final class RotationEngine {
             if let first = scored {
                 chosen = first
             } else if !pool.isEmpty {
-                chosen = pickLeastRecent(in: pool, filters: filters)
+                // Dedup blocked every candidate — every photo the query ladder
+                // returned is within the cooldown window. Re-show the one seen
+                // longest ago rather than stalling. This is the ONLY path that
+                // can repeat a photo while "no repeats" is on; log it so it's
+                // explainable rather than looking like the toggle is ignored.
+                let dup = pickLeastRecent(in: pool, filters: filters)
+                log.info("no unseen photo across \(queries.count, privacy: .public) queries (\(pool.count, privacy: .public) candidates all within \(rule.repeatCooldownDays, privacy: .public)d cooldown) — re-showing least-recent \(dup?.id ?? "-", privacy: .public). Widen topics or lower cooldown to avoid.")
+                chosen = dup
             } else {
                 chosen = nil
             }
@@ -225,38 +386,70 @@ final class RotationEngine {
                 // Surface that explicitly so the menu bar status is honest
                 // about why the rotation didn't happen.
                 lastError = "No matching photos on Unsplash for the current topics. Try broader topics in Settings → Schedule."
-                return
+                record(.failed, "No matching photos")
+                return .failed
             }
+
+            let chosenLoc = [first.location?.city, first.location?.country]
+                .compactMap { $0 }.joined(separator: ", ")
+            let hasCoord = first.location?.position?.latitude != nil
+            log.info("rotation chose \(first.id, privacy: .public) location=\(chosenLoc.isEmpty ? "(none — Unsplash returned no location)" : chosenLoc, privacy: .public) coords=\(hasCoord ? "yes" : "no", privacy: .public)")
 
             let applied = try await WallpaperApplier.shared.apply(unsplash: first)
             lastError = nil
+            // Record the photo outcome now. Whether AI text lands is tracked
+            // separately (WallpaperApplier.lastEnrichmentStatus) since the
+            // enrichment runs asynchronously below and may take 5–30s.
+            let aiOn = WallpaperApplier.shared.isEnrichmentConfigured
+            record(.rotated, aiOn ? "New photo applied · AI text pending" : "New photo applied · AI text off")
+
+            // Provenance for the enrichment agent: was the chosen photo from a
+            // location-biased rung, or the worldwide topic fallback?
+            // buildQueryLadder appends the bare topic last as the worldwide
+            // fallback, so a matched query that isn't the bare topic means the
+            // search was biased toward the user's area.
+            let plainTopic: String = {
+                let t = baseTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+                return t.isEmpty ? "architecture" : t
+            }()
+            let searchWasLocationBiased = rule.preferNearby && matchedQuery != nil && matchedQuery != plainTopic
 
             Task {
-                await WallpaperApplier.shared.enrichIfNeeded(applied)
+                await WallpaperApplier.shared.enrichIfNeeded(
+                    applied,
+                    searchQuery: matchedQuery,
+                    searchWasLocationBiased: searchWasLocationBiased
+                )
             }
 
             let remaining = eligible.filter { $0.id != first.id }.prefix(prefetchCount)
             for candidate in remaining {
                 await WallpaperApplier.shared.preCache(candidate)
             }
+            return .rotated
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            record(.failed, lastError ?? "Error")
+            return .failed
         }
     }
 
-    /// Score the candidate pool by (location, brightness vs. sun altitude) and
-    /// return the highest-scoring photo. Used when Match Daylight is enabled.
+    /// Rank the candidate pool and return the highest-scoring photo.
     ///
-    /// The brightness target is derived from the sun's altitude at the *next
-    /// scheduled rotation time* (so a photo that lands at sunset gets picked at
-    /// the rotation tick that's about to run, not the one before). Location and
-    /// brightness combine as a weighted sum (location weighted slightly higher,
-    /// per the spec) — neither is a hard gate, so a perfect-brightness photo
-    /// that's far away can still beat a bright noon shot from down the street.
-    private func pickByDaylightScore(in pool: [UnsplashPhoto], rule: RotationRule) async -> UnsplashPhoto? {
+    /// Two signals, each used only when its toggle is on AND the data exists:
+    ///   • location — distance from the user to the photo's Unsplash
+    ///     coordinates (preferNearby). The query ladder only biases the
+    ///     *search*; this is what actually prefers the geographically closest
+    ///     candidate within the results.
+    ///   • brightness — photo average color vs. the sun's altitude at
+    ///     `referenceTime` (matchDaylight).
+    /// Weighted sum (location slightly higher) — neither is a hard gate, so a
+    /// perfect-brightness photo that's far away can still beat a bright noon
+    /// shot from down the street. Candidates missing both signals stay in the
+    /// running with a neutral score.
+    private func pickBest(in pool: [UnsplashPhoto], rule: RotationRule, referenceTime: Date) async -> UnsplashPhoto? {
         guard !pool.isEmpty else { return nil }
         let userCoord = await LocationService.shared.currentCoordinate()
-        let referenceTime = nextFireAt ?? .now
         let target = SolarMath.targetBrightness(at: referenceTime, coordinate: userCoord)
 
         let locationWeight = 0.6
@@ -265,19 +458,18 @@ final class RotationEngine {
         var best: (photo: UnsplashPhoto, score: Double)?
         for photo in pool {
             var locScore: Double? = nil
-            if let user = userCoord,
+            if rule.preferNearby,
+               let user = userCoord,
                let lat = photo.location?.position?.latitude,
                let lon = photo.location?.position?.longitude {
                 locScore = SolarMath.locationScore(userLat: user.latitude, userLon: user.longitude, photoLat: lat, photoLon: lon)
             }
 
             var brScore: Double? = nil
-            if let b = SolarMath.brightness(fromHex: photo.color) {
+            if rule.matchDaylight, let b = SolarMath.brightness(fromHex: photo.color) {
                 brScore = SolarMath.brightnessScore(candidate: b, target: target)
             }
 
-            // If we have neither signal for this candidate, keep it in the
-            // running with a neutral score so we don't filter it out entirely.
             let combined: Double
             switch (locScore, brScore) {
             case let (l?, b?): combined = locationWeight * l + brightnessWeight * b
@@ -303,12 +495,40 @@ final class RotationEngine {
     private func buildQueryLadder(baseTopic: String, rule: RotationRule) async -> [String] {
         let trimmed = baseTopic.trimmingCharacters(in: .whitespacesAndNewlines)
         let topic = trimmed.isEmpty ? "architecture" : trimmed
-        guard rule.preferNearby,
-              let hint = await LocationService.shared.currentRegion()?.queryHint
-        else {
+        guard rule.preferNearby else {
+            log.info("query ladder: preferNearby OFF → [\(topic, privacy: .public)] (worldwide)")
             return [topic]
         }
-        return ["\(topic) \(hint)", topic]
+        guard let region = await LocationService.shared.currentRegion() else {
+            log.info("query ladder: preferNearby ON but region unresolved (denied / no fix) → [\(topic, privacy: .public)] (worldwide)")
+            return [topic]
+        }
+        // Locality-first, coarse-to-fine. The KEY rung is the bare city name
+        // with NO topic. "architecture Avalon" matches almost nothing, but
+        // "Avalon"/"Catalina" alone has 100+ photos — requiring BOTH the topic
+        // and the place as keywords is exactly what made the search skip past
+        // the user's own town straight to a worldwide topic query. So we try:
+        //   1. "<topic> <city>"   — local AND on-topic (ideal)
+        //   2. "<city>"           — local, topic dropped (keeps the wallpaper
+        //                           nearby even when few local photos carry the
+        //                           topic tag — the Catalina/Avalon case)
+        //   3. "<topic> <region>" — broader region, back on-topic
+        //   4. "<topic>"          — worldwide fallback
+        let hints = region.searchHints
+        var ladder: [String] = []
+        if let primary = hints.first {
+            ladder.append("\(topic) \(primary)")
+            ladder.append(primary)
+        }
+        for hint in hints.dropFirst() {
+            ladder.append("\(topic) \(hint)")
+        }
+        ladder.append(topic)
+        // Dedup preserving order (topic may equal a hint; hints may collide).
+        var seen = Set<String>()
+        ladder = ladder.filter { seen.insert($0.lowercased()).inserted }
+        log.info("query ladder: preferNearby ON, region=\(region.displayName, privacy: .public) → \(ladder.joined(separator: " | "), privacy: .public)")
+        return ladder
     }
 
     /// Set of unsplash IDs shown within the cooldown window. Photos with

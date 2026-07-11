@@ -24,6 +24,18 @@ final class WallpaperApplier {
     var lastEnrichmentStatus: String?
     var lastEnrichmentAt: Date?
 
+    /// Whether the selected model provider has what it needs to attempt AI
+    /// enrichment. Ollama is local best-effort (always "configured"); a Cloud
+    /// API needs an API key. Used by the rotation engine to label the last
+    /// trigger as "AI text pending" vs "AI text off".
+    var isEnrichmentConfigured: Bool {
+        switch AIProvider.current {
+        case .ollama: return true
+        case .openAICompatible:
+            return (KeychainService.shared.get(.openAIAPIKey)?.isEmpty == false)
+        }
+    }
+
     @ObservationIgnored
     private let log = Logger(subsystem: "me.ethanpan.paperpaper", category: "widget-sync")
 
@@ -51,8 +63,6 @@ final class WallpaperApplier {
             try? Store.shared.context.save()
         }
 
-        Store.shared.recordShown(photo)
-
         // Order matters: set the wallpaper BEFORE writing the widget payload.
         // WallpaperWatcher polls the macOS desktop URL on a 30s tick + on
         // activeSpaceDidChange / didBecomeActive — if we wrote the widget first
@@ -70,6 +80,11 @@ final class WallpaperApplier {
         // this rotation will land on each Space the user visits — no per-
         // apply TTL observer needed.
         #endif
+
+        // Mark "shown" only after the wallpaper actually set. Recording before
+        // would burn the photo into the no-repeats cooldown even when
+        // setOnAllScreens throws and the user never sees it.
+        Store.shared.recordShown(photo)
 
         writeWidgetPayload(for: photo, file: rawFile)
 
@@ -154,21 +169,35 @@ final class WallpaperApplier {
     /// asks for one wallpaper across every Space.
     func reapplyOnCurrentSpace() async {
         let rule = Store.shared.rule()
-        guard rule.spaceMode == .unified else { return }
+        guard rule.spaceMode == .unified else {
+            log.info("space-change reapply: skipped (spaceMode=\(rule.spaceMode.rawValue, privacy: .public), not unified)")
+            return
+        }
 
         let descriptor = FetchDescriptor<Photo>(sortBy: [SortDescriptor(\.lastSeenAt, order: .reverse)])
-        guard let latest = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }) else { return }
+        guard let latest = try? Store.shared.context.fetch(descriptor).first(where: { $0.lastSeenAt != nil }) else {
+            log.info("space-change reapply: skipped (no applied photo on file yet)")
+            return
+        }
         let raw = ImageCache.shared.fileURL(for: latest.unsplashID)
-        guard FileManager.default.fileExists(atPath: raw.path) else { return }
+        guard FileManager.default.fileExists(atPath: raw.path) else {
+            log.info("space-change reapply: skipped (cached file missing for \(latest.unsplashID, privacy: .public))")
+            return
+        }
 
         #if os(macOS)
         // Hold the watcher gate so a concurrent WallpaperWatcher tick can't
-        // snapshot a half-applied state during the setOnAllScreens call.
+        // snapshot a half-applied state during the set.
         suppressWatcherSync = true
         defer { suppressWatcherSync = false }
         do {
-            try WallpaperService.shared.setOnAllScreens(imageURL: raw)
-            log.info("space-change reapply: \(latest.unsplashID, privacy: .public)")
+            // Idempotent: only screens NOT already showing this image get
+            // re-set. Revisiting a Space we've already pushed to does zero work
+            // — no flash, no Dock churn — so the common case feels as quick as
+            // the old single-set behavior. Only a Space that genuinely lacks
+            // the wallpaper pays the one-time legacy-API set.
+            let changed = try WallpaperService.shared.reapplyOnAllScreensIfNeeded(imageURL: raw)
+            log.info("space-change reapply: \(changed ? "set" : "already-current", privacy: .public) for \(latest.unsplashID, privacy: .public)")
         } catch {
             log.error("space-change reapply failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -206,6 +235,11 @@ final class WallpaperApplier {
         if photo.enrichment?.enrichedAt == nil {
             Task { [weak self] in await self?.enrichIfNeeded(photo) }
         }
+
+        // Pre-fetching can grow the folder past the cap; trim it here too so
+        // prefetch doesn't quietly defeat "keep only references". Only image
+        // bytes are dropped — never the metadata we just upserted.
+        enforceCacheCap()
     }
 
     /// Dumps the current on-disk widget payload field-by-field to the unified
@@ -252,14 +286,46 @@ final class WallpaperApplier {
         let desktopURL = WallpaperService.shared.allScreens.first.flatMap {
             WallpaperService.shared.currentImageURL(for: $0)
         }
+        log.info("syncWidgetFromCurrent: desktopURL=\(desktopURL?.lastPathComponent ?? "nil", privacy: .public) forceReload=\(forceReload, privacy: .public)")
         if let url = desktopURL, let photo = matchPhoto(for: url) {
+            // Fast path: when the payload already describes this exact photo and
+            // nobody asked for a forced reload, skip writeWidgetPayload entirely.
+            // That method re-copies current.jpg into the App Group on the main
+            // actor (disk I/O) BEFORE commitPayload even gets to decide it's
+            // unchanged — so without this guard every space-change tick / 30s
+            // tick re-copies a multi-MB file for nothing, stacking onto the
+            // legacy-set hitch on a Space switch. matchPhoto already proved it's
+            // our image, so an unchanged unsplashID means the widget is current.
+            if !forceReload, WidgetPayload.read()?.unsplashID == photo.unsplashID {
+                log.info("syncWidgetFromCurrent: payload already current for \(photo.unsplashID, privacy: .public) — skip copy/reload")
+                kickOffEnrichmentIfMissing(photo)
+                return
+            }
+            log.info("syncWidgetFromCurrent: matched our photo \(photo.unsplashID, privacy: .public)")
             writeWidgetPayload(for: photo, file: url, forceReload: forceReload)
             kickOffEnrichmentIfMissing(photo)
             return
         }
-        if let url = desktopURL, isExternal(url) {
-            writeExternalPayload(file: url, forceReload: forceReload)
-            return
+        if let url = desktopURL {
+            // A macOS *system/default* wallpaper (DefaultDesktop.heic, a Dynamic
+            // wallpaper, the ScreenContinuity hand-off image) is NOT a deliberate
+            // user choice. It's the transient frame macOS shows on a Space we
+            // haven't pushed our image to yet, or for the split-second while
+            // WallpaperAgent tears a Dynamic wallpaper down to swap in a still.
+            // The space observer's reapply re-pushes our image moments later, so
+            // recording this frame would only clobber the good photo card with a
+            // blank "DefaultDesktop" payload — the exact "widget shows nothing /
+            // shows the default" failure. Leave the last real payload intact and
+            // let the next (post-reapply) sync match our photo.
+            if isSystemWallpaper(url) {
+                log.info("syncWidgetFromCurrent: ignoring system/default wallpaper \(url.lastPathComponent, privacy: .public) — keeping last payload")
+                return
+            }
+            if isExternal(url) {
+                log.info("syncWidgetFromCurrent: external user wallpaper \(url.lastPathComponent, privacy: .public)")
+                writeExternalPayload(file: url, forceReload: forceReload)
+                return
+            }
         }
         #endif
 
@@ -303,7 +369,12 @@ final class WallpaperApplier {
     private var enrichmentTasks: [String: Task<Void, Never>] = [:]
     private var lastEnrichmentTask: Task<Void, Never>?
 
-    func enrichIfNeeded(_ photo: Photo) async {
+    /// `searchQuery` / `searchWasLocationBiased` carry the rotation's search
+    /// provenance into the agent so it can tell a worldwide-fallback photo from
+    /// a location-biased one. Optional — callers that didn't run a search
+    /// (manual regenerate, syncWidgetFromCurrent) pass nil and the agent simply
+    /// gets no provenance hint.
+    func enrichIfNeeded(_ photo: Photo, searchQuery: String? = nil, searchWasLocationBiased: Bool = false) async {
         if let existing = photo.enrichment, existing.enrichedAt != nil { return }
         let id = photo.unsplashID
 
@@ -318,7 +389,7 @@ final class WallpaperApplier {
         let prior = lastEnrichmentTask
         let task: Task<Void, Never> = Task { [weak self] in
             await prior?.value
-            await self?.runEnrichment(photo)
+            await self?.runEnrichment(photo, searchQuery: searchQuery, searchWasLocationBiased: searchWasLocationBiased)
         }
         enrichmentTasks[id] = task
         // isEnriching tracks ANY in-flight enrichment, regardless of who
@@ -362,7 +433,7 @@ final class WallpaperApplier {
         return true
     }
 
-    private func runEnrichment(_ photo: Photo) async {
+    private func runEnrichment(_ photo: Photo, searchQuery: String? = nil, searchWasLocationBiased: Bool = false) async {
         if let existing = photo.enrichment, existing.enrichedAt != nil { return }
 
         let enrichment = photo.enrichment ?? {
@@ -393,7 +464,12 @@ final class WallpaperApplier {
         //   Confidence = .areaOnly so widget knows building details aren't real.
         // - If the agent returned nil (Ollama unreachable / errored): leave
         //   every field blank.
-        let confirmed = await ArchitectureAgent.confirm(for: photo, imageFileURL: imageURL)
+        let confirmed = await ArchitectureAgent.confirm(
+            for: photo,
+            imageFileURL: imageURL,
+            searchQuery: searchQuery,
+            searchWasLocationBiased: searchWasLocationBiased
+        )
         // Only mark enrichedAt when the agent actually produced something
         // usable. A failed run (nil, or empty blurbs) leaves enrichedAt nil
         // so the next `enrichIfNeeded` call — from preCache on the next app
@@ -414,7 +490,9 @@ final class WallpaperApplier {
             enrichment.blurbShort = confirmed.oneSentence
             enrichment.blurbMedium = confirmed.blurbMedium
             enrichment.blurbLong = confirmed.blurbLong
-            enrichment.modelUsed = UserDefaults.standard.string(forKey: "ollama.model")
+            enrichment.modelUsed = AIProvider.current == .openAICompatible
+                ? UserDefaults.standard.string(forKey: AIProvider.Keys.openAIModel)
+                : UserDefaults.standard.string(forKey: "ollama.model")
 
             // Adopt the agent's specific location string when Unsplash gave
             // us only a country (or nothing). Stuff it into locationName so
@@ -459,6 +537,10 @@ final class WallpaperApplier {
 
     private func ensureDownloaded(id: String, url: URL) async throws -> URL {
         let local = ImageCache.shared.fileURL(for: id)
+        // Cache hit: reuse the bytes already on disk. After a cap eviction the
+        // file may be gone even though the Photo row still exists — we just
+        // re-download it here. The enrichment is keyed off the Photo, so it is
+        // never recomputed; this is the "keep metadata, re-fetch bytes" path.
         if FileManager.default.fileExists(atPath: local.path) { return local }
         let data = try await UnsplashService.shared.download(url)
         return try ImageCache.shared.put(data: data, for: id)
@@ -644,6 +726,22 @@ final class WallpaperApplier {
         !url.path.hasPrefix(ImageCache.shared.dir.path)
     }
 
+    /// macOS system / default wallpapers — the frames the OS shows transiently
+    /// on a Space we haven't pushed our image to, or while a Dynamic wallpaper
+    /// rebuilds. These are NOT user choices and must never be recorded into the
+    /// widget payload (doing so overwrites the real photo card with a blank
+    /// "DefaultDesktop" one). Distinct from `isExternal`, which also covers a
+    /// genuine user-picked image in ~/Pictures that we *do* want to mirror.
+    private func isSystemWallpaper(_ url: URL) -> Bool {
+        let path = url.path
+        if url.lastPathComponent == "DefaultDesktop.heic" { return true }
+        if path.hasPrefix("/System/") { return true }
+        if path.contains("/Library/Desktop Pictures/") { return true }
+        if path.contains("com.apple.ScreenContinuity") { return true }
+        if path.contains("com.apple.wallpaper") { return true }
+        return false
+    }
+
     private func copyImageToAppGroup(from sourceFile: URL, photoID: String) -> String {
         let fm = FileManager.default
         let dir = WidgetPayload.widgetDir()
@@ -710,11 +808,32 @@ final class WallpaperApplier {
         writeWidgetPayload(for: photo, file: raw, forceReload: forceReload)
     }
 
+    /// Default ceiling on cached image FILES. With "no repeats" on, every
+    /// rotation downloads a fresh photo, so a large cache buys nothing for
+    /// variety — its only real value is a handful of recent images to fall back
+    /// on when you're offline. 24 keeps that bounded so the folder never grows
+    /// large; the Photo/Enrichment rows live in SwiftData regardless, so a
+    /// re-encountered photo is just re-downloaded, never re-described.
+    static let defaultMaxCachedImages = 24
+
     private func enforceCacheCap() {
-        let maxMB = UserDefaults.standard.object(forKey: "cache.maxSizeMB") as? Double ?? 0
-        let maxBytes = Int64(maxMB * 1024 * 1024)
-        let protected = currentWallpaperIDs()
-        ImageCache.shared.enforceCap(maxBytes: maxBytes, protectedIDs: protected)
+        // Keep at most N image files — the newest — on disk. The current
+        // wallpaper(s) and any prefetched-but-unshown photos are always
+        // protected from eviction.
+        let maxImages = UserDefaults.standard.object(forKey: "cache.maxImages") as? Int ?? Self.defaultMaxCachedImages
+        var protected = currentWallpaperIDs()
+        // Prefetch warms the next N photos before they're shown, so they have
+        // no lastSeenAt and miss the "recently shown" set. Protect the N
+        // most-recently-cached files too so a freshly-warmed photo isn't
+        // evicted the instant it lands.
+        let prefetchCount = UserDefaults.standard.object(forKey: "cache.prefetchCount") as? Int ?? 0
+        if prefetchCount > 0 {
+            protected.formUnion(ImageCache.shared.recentlyCachedIDs(limit: prefetchCount))
+        }
+        let removed = ImageCache.shared.enforceCount(maxCount: maxImages, protectedIDs: protected)
+        if removed > 0 {
+            log.info("cache trim: removed \(removed, privacy: .public) old image(s), keeping newest \(maxImages, privacy: .public) (+\(protected.count, privacy: .public) protected)")
+        }
     }
 
     private func currentWallpaperIDs() -> Set<String> {

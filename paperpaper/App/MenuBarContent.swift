@@ -16,6 +16,20 @@ struct MenuBarContent: View {
 
     private var currentPayload: WidgetPayload? { WidgetPayload.read() }
 
+    /// Reachability line text, named for the selected model provider so it
+    /// reads "Cloud API reachable" when an OpenAI-compatible API is configured
+    /// instead of always saying "Ollama".
+    private var providerStatusText: String {
+        let name = AIProvider.current.shortName
+        if ollamaReachable == true { return "\(name) reachable" }
+        if ollamaReachable == false {
+            return AIProvider.current == .ollama
+                ? "Ollama unreachable — set host in Connections"
+                : "Cloud API unreachable — check key in Connections"
+        }
+        return "Checking \(name)…"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -51,16 +65,15 @@ struct MenuBarContent: View {
                         .foregroundStyle(.red)
                         .lineLimit(2)
                 }
-                // Ollama reachability — the architecture agent silently no-ops
-                // when Ollama isn't running, which is the most common reason
-                // for "the LLM info isn't updating." Surface it explicitly.
+                // Model-provider reachability — the architecture agent silently
+                // no-ops when the model backend isn't reachable, which is the
+                // most common reason for "the LLM info isn't updating." Surface
+                // it explicitly, named for whichever provider is selected.
                 HStack(spacing: 6) {
                     Circle()
                         .fill(ollamaReachable == true ? Color.green : (ollamaReachable == false ? Color.orange : Color.gray))
                         .frame(width: 6, height: 6)
-                    Text(ollamaReachable == true ? "Ollama reachable"
-                       : ollamaReachable == false ? "Ollama unreachable — set host in Connections"
-                       : "Checking Ollama…")
+                    Text(providerStatusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

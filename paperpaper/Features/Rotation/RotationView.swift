@@ -6,6 +6,11 @@ struct RotationView: View {
     @Query private var rules: [RotationRule]
     @Query private var filterRows: [FilterPrefs]
     @State private var engine = RotationEngine.shared
+    @State private var applier = WallpaperApplier.shared
+    @State private var network = NetworkMonitor.shared
+    /// Bumped on a timer so the live condition readouts (power, network) in the
+    /// Status panel refresh even when nothing else in the view changes.
+    @State private var conditionTick = 0
     @State private var newTopic: String = ""
     @State private var newExclusion: String = ""
     @State private var customIntervalValue: Int = 60
@@ -63,6 +68,18 @@ struct RotationView: View {
                 Text("Every N minutes").tag(ScheduleMode.interval)
                 Text("At specific times").tag(ScheduleMode.specificTimes)
             }
+
+            Toggle("Don't rotate when offline", isOn: Binding(
+                get: { rule.pauseWhenOffline },
+                set: { rule.pauseWhenOffline = $0; try? Store.shared.context.save() }
+            ))
+            Toggle("Don't rotate on battery", isOn: Binding(
+                get: { rule.pauseOnBattery },
+                set: { rule.pauseOnBattery = $0; try? Store.shared.context.save() }
+            ))
+            Text("Skipped rotations resume automatically — within a couple of minutes of reconnecting or plugging in.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -231,7 +248,7 @@ struct RotationView: View {
                 Text("Active only").tag(SpaceMode.activeOnly)
             }
             .pickerStyle(.segmented)
-            Text("Per-Space and Active-only only update the wallpaper when that Space becomes active (macOS API limitation).")
+            Text("Unified keeps one wallpaper across every Space and follows you as you switch Spaces. Per-Space and Active-only leave other Spaces untouched and only update the Space that's currently active (macOS API limitation).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -409,6 +426,56 @@ struct RotationView: View {
             if let next = engine.nextFireAt {
                 LabeledContent("Next rotation", value: formatNextFire(next))
             }
+
+            // Live conditions — what the guard rules are seeing right now. Lets
+            // the user confirm "yes, it's skipping because I'm on battery / the
+            // Wi-Fi dropped" without digging through Console.
+            let _ = conditionTick   // re-read on each tick
+            LabeledContent("Network") {
+                conditionBadge(ok: network.isConnected,
+                               okText: "Connected",
+                               offText: "Offline",
+                               muted: !rule.pauseWhenOffline)
+            }
+            LabeledContent("Power") {
+                let onBattery = PowerService.isOnBattery
+                conditionBadge(ok: !onBattery,
+                               okText: "Plugged in",
+                               offText: "On battery",
+                               muted: !rule.pauseOnBattery)
+            }
+
+            // Outcome of the most recent rotation tick.
+            if let trig = engine.lastTrigger {
+                LabeledContent("Last trigger") {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        HStack(spacing: 5) {
+                            Image(systemName: triggerSymbol(trig.kind))
+                                .foregroundStyle(triggerColor(trig.kind))
+                            Text(trig.label)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .font(.callout)
+                        Text(trig.at.formatted(.relative(presentation: .named)))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
+            // AI text outcome (runs asynchronously after the photo is applied).
+            if let ai = applier.lastEnrichmentStatus {
+                LabeledContent("AI text") {
+                    HStack(spacing: 5) {
+                        Image(systemName: ai.hasPrefix("Succeeded") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            .foregroundStyle(ai.hasPrefix("Succeeded") ? .green : .orange)
+                        Text(ai)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .font(.callout)
+                }
+            }
+
             if let err = engine.lastError {
                 Label(err, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
@@ -417,6 +484,47 @@ struct RotationView: View {
                 Task { await engine.rotateNow() }
             }
             .buttonStyle(.glass)
+        }
+        .task {
+            // Refresh the live condition readouts every few seconds while the
+            // Status panel is visible.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                conditionTick &+= 1
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func conditionBadge(ok: Bool, okText: String, offText: String, muted: Bool) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(muted ? Color.gray : (ok ? Color.green : Color.orange))
+                .frame(width: 7, height: 7)
+            Text(ok ? okText : offText)
+                .foregroundStyle(muted ? .secondary : .primary)
+            if muted {
+                Text("(rule off)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.callout)
+    }
+
+    private func triggerSymbol(_ kind: RotationEngine.TriggerStatus.Kind) -> String {
+        switch kind {
+        case .rotated: return "checkmark.circle.fill"
+        case .skipped: return "pause.circle.fill"
+        case .failed:  return "xmark.circle.fill"
+        }
+    }
+
+    private func triggerColor(_ kind: RotationEngine.TriggerStatus.Kind) -> Color {
+        switch kind {
+        case .rotated: return .green
+        case .skipped: return .orange
+        case .failed:  return .red
         }
     }
 

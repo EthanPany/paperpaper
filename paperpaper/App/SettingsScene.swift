@@ -28,10 +28,13 @@ struct SettingsPane: View {
         }
     }
 
-    @State private var section: Section = .discover
+    @State private var windowState = MainWindowState.shared
 
     var body: some View {
-        TabView(selection: $section) {
+        TabView(selection: Binding(
+            get: { windowState.settingsSection },
+            set: { windowState.settingsSection = $0 }
+        )) {
             DiscoverView()
                 .tabItem { Label(Section.discover.label, systemImage: Section.discover.icon) }
                 .tag(Section.discover)

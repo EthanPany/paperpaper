@@ -66,6 +66,9 @@ struct paperpaperApp: App {
             }
         }
         SpaceObserver.shared.start()
+        // Start network reachability tracking before the engine so the
+        // offline guard has a fresh path status by the first scheduled tick.
+        NetworkMonitor.shared.start()
         Self.log.notice("paperpaperApp.init starting rotation engine")
         RotationEngine.shared.startIfEnabled()
         Self.log.notice("paperpaperApp.init starting iCloud sync coordinator")

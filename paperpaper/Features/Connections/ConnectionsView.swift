@@ -78,6 +78,17 @@ struct IntelligenceView: View {
     @AppStorage("ollama.temperature") private var ollamaTemperature: Double = 0.3
     @AppStorage("ollama.timeoutSeconds") private var ollamaTimeoutSeconds: Double = 30
 
+    // Provider selection + OpenAI-compatible config.
+    @AppStorage(AIProvider.Keys.provider) private var providerRaw: String = AIProvider.ollama.rawValue
+    @AppStorage(AIProvider.Keys.openAIBaseURL) private var openAIBaseURL: String = AIProvider.defaultOpenAIBaseURL
+    @AppStorage(AIProvider.Keys.openAIModel) private var openAIModel: String = AIProvider.defaultOpenAIModel
+    @State private var openAIKey: String = ""
+
+    private var provider: AIProvider {
+        get { AIProvider(rawValue: providerRaw) ?? .ollama }
+        nonmutating set { providerRaw = newValue.rawValue }
+    }
+
     @State private var availableModels: [String] = []
     @State private var modelsLoading: Bool = false
     @State private var modelsError: String?
@@ -120,6 +131,25 @@ struct IntelligenceView: View {
 
     var body: some View {
         Form {
+            Section("Provider") {
+                Picker("Model provider", selection: Binding(
+                    get: { provider },
+                    set: { provider = $0 }
+                )) {
+                    ForEach(AIProvider.allCases, id: \.self) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                Text(provider == .ollama
+                     ? "Runs locally on your Mac — nothing leaves the machine."
+                     : "Sends the wallpaper image + metadata to the API you configure below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if provider == .openAICompatible {
+                openAISection
+            } else {
             Section("Ollama") {
                 TextField("Host URL", text: $ollamaURL)
                 SecureField("API key (for Cloud / web search)", text: $ollamaAPIKey)
@@ -230,6 +260,7 @@ struct IntelligenceView: View {
                     .controlSize(.small)
                 }
             }
+            } // end provider == .ollama branch
 
             // Search Agent section temporarily hidden — LLM-powered Discover
             // search is feature-flagged off until the agent flow is stable.
@@ -256,7 +287,77 @@ struct IntelligenceView: View {
         .formStyle(.grouped)
         .onAppear {
             ollamaAPIKey = KeychainService.shared.get(.ollamaAuthHeader) ?? ""
-            Task { await refreshModels() }
+            openAIKey = KeychainService.shared.get(.openAIAPIKey) ?? ""
+            // Auto-list local Ollama models; the OpenAI list needs a key, so
+            // leave that to an explicit refresh to avoid first-load errors.
+            if provider == .ollama {
+                Task { await refreshModels() }
+            }
+        }
+        .onChange(of: providerRaw) {
+            // The model list, test result and error are provider-specific.
+            availableModels = []
+            status = .idle
+            message = nil
+            modelsError = nil
+        }
+    }
+
+    // MARK: - OpenAI-compatible section
+
+    @ViewBuilder
+    private var openAISection: some View {
+        Section("Cloud API") {
+            TextField("Base URL", text: $openAIBaseURL)
+                .textContentType(.URL)
+            SecureField("API key", text: $openAIKey)
+            HStack {
+                TextField("Model (e.g. gpt-4o-mini)", text: $openAIModel)
+                Button {
+                    Task { await refreshModels() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.glass)
+                .help("List models from this API")
+            }
+            if !availableModels.isEmpty {
+                Picker("Available models", selection: $openAIModel) {
+                    ForEach(availableModels, id: \.self) { Text($0).tag($0) }
+                }
+            }
+            HStack {
+                Button("Save") { saveOpenAIKey() }
+                    .buttonStyle(.glassProminent)
+                Button("Test") { Task { await test() } }
+                    .buttonStyle(.glass)
+                StatusChip(status: status)
+                if let message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            if let modelsError {
+                Label(modelsError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Text("Works with OpenAI, OpenRouter, Together, Groq, LM Studio, llama.cpp, vLLM and similar. A vision-capable model is needed to read the photo.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let status = applier.lastEnrichmentStatus {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: status.hasPrefix("Succeeded") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(status.hasPrefix("Succeeded") ? .green : .orange)
+                        .font(.caption)
+                    Text("Last enrichment: \(status)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
         }
     }
 
@@ -265,17 +366,29 @@ struct IntelligenceView: View {
         else { KeychainService.shared.set(ollamaAPIKey, for: .ollamaAuthHeader) }
     }
 
+    private func saveOpenAIKey() {
+        if openAIKey.isEmpty { KeychainService.shared.delete(.openAIAPIKey) }
+        else { KeychainService.shared.set(openAIKey, for: .openAIAPIKey) }
+    }
+
     private func test() async {
-        saveOllamaKey()
         status = .testing
         message = nil
+        if provider == .openAICompatible {
+            saveOpenAIKey()
+            let ok = await OllamaService.shared.ping()
+            status = ok ? .ok : .failed
+            message = ok ? "Reachable at \(openAIBaseURL)" : "Could not reach the API at \(openAIBaseURL). Check the URL and key."
+            return
+        }
+        saveOllamaKey()
         let ok = await OllamaService.shared.ping()
         status = ok ? .ok : .failed
         message = ok ? "Reachable at \(ollamaURL)" : "Could not reach Ollama at \(ollamaURL)."
     }
 
     private func refreshModels() async {
-        saveOllamaKey()
+        if provider == .openAICompatible { saveOpenAIKey() } else { saveOllamaKey() }
         modelsLoading = true
         modelsError = nil
         do {

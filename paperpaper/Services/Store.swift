@@ -32,6 +32,7 @@ final class Store {
             }
         }
         ensureSingletonsExist()
+        runMigrations()
     }
 
     var context: ModelContext { container.mainContext }
@@ -146,6 +147,25 @@ final class Store {
     private func ensureSingletonsExist() {
         _ = rule()
         _ = filters()
+    }
+
+    /// One-time data migrations. Each is gated on its own UserDefaults flag so
+    /// it runs exactly once and never re-applies (which would stomp a later
+    /// user choice).
+    private func runMigrations() {
+        // "prefer nearby" became a default-on core feature — but a model
+        // default only applies to NEW rule rows, so existing installs keep the
+        // old `preferNearby = false` and silently get worldwide photos. Flip it
+        // on once. Guarded so a user who later turns it back off stays off.
+        let preferNearbyKey = "migration.preferNearbyDefaultOn.v1"
+        if !UserDefaults.standard.bool(forKey: preferNearbyKey) {
+            let rule = rule()
+            if !rule.preferNearby {
+                rule.preferNearby = true
+                try? context.save()
+            }
+            UserDefaults.standard.set(true, forKey: preferNearbyKey)
+        }
     }
 }
 

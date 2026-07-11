@@ -219,6 +219,8 @@ extension Photo {
             locationName: unsplash.location?.name,
             locationCity: unsplash.location?.city,
             locationCountry: unsplash.location?.country,
+            locationLatitude: unsplash.location?.position?.latitude,
+            locationLongitude: unsplash.location?.position?.longitude,
             width: unsplash.width,
             height: unsplash.height,
             hexColor: unsplash.color,
