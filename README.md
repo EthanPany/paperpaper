@@ -26,8 +26,8 @@ Until then this repo is the source of record. Pull, build, run.
 ## Build
 
 ```bash
-git clone https://github.com/EthanPany/paperpaper.git
-cd paperpaper
+git clone https://github.com/EthanPany/paperpaper-wallpaper-app.git
+cd paperpaper-wallpaper-app
 open paperpaper.xcodeproj
 # In Xcode: select the paperpaper scheme + "My Mac" destination, then Run.
 ```
@@ -101,4 +101,4 @@ The architecture caption agent runs locally via Ollama — no third-party AI ser
 
 ## Support
 
-[github.com/EthanPany/paperpaper/issues](https://github.com/EthanPany/paperpaper/issues) · pyy122759996@gmail.com
+[github.com/EthanPany/paperpaper-wallpaper-app/issues](https://github.com/EthanPany/paperpaper-wallpaper-app/issues) · pyy122759996@gmail.com
